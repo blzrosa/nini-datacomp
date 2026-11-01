@@ -25,13 +25,14 @@ def _bits(col: Column) -> list[bool]:
     if col.validity is None:
         return [True] * col.length
     nbytes = (col.bit_offset + col.length + 7) // 8
-    raw = np.frombuffer((ctypes.c_uint8 * nbytes).from_address(col.validity), np.uint8)
+    raw = np.frombuffer(ctypes.string_at(col.validity, nbytes), np.uint8)
     bits = np.unpackbits(raw, bitorder="little")[col.bit_offset : col.bit_offset + col.length]
     return [bool(b) for b in bits]
 
 
 def _text(col: Column, i: int) -> bytes:
-    view = (ctypes.c_uint8 * 16).from_address(col.data + 16 * i)  # type: ignore[operator]
+    assert col.data is not None
+    view = ctypes.string_at(col.data + 16 * i, 16)
     n = int.from_bytes(bytes(view[0:4]), "little")
     if n <= 12:
         return bytes(view[4 : 4 + n])
@@ -97,8 +98,9 @@ def test_booleans_are_bits() -> None:
     col = import_column(s)
     assert col.is_bool
     assert col.width == 0
+    assert col.data is not None
     nbytes = (col.bit_offset + col.length + 7) // 8
-    raw = np.frombuffer((ctypes.c_uint8 * nbytes).from_address(col.data), np.uint8)  # type: ignore[arg-type]
+    raw = np.frombuffer(ctypes.string_at(col.data, nbytes), np.uint8)
     bits = np.unpackbits(raw, bitorder="little")[col.bit_offset : col.bit_offset + col.length]
     got = [None if not ok else bool(b) for b, ok in zip(bits, _bits(col), strict=False)]
     assert got == s.to_list()
@@ -131,7 +133,13 @@ def test_strings_short_and_long_with_nulls() -> None:
     ],
 )
 def test_temporal_and_decimal(s: pl.Series, width: int) -> None:
-    col = import_column(s)
+    try:
+        col = import_column(s)
+    except dc.UnsupportedTypeError:
+        if s.dtype == pl.Decimal:  # Polars antigos podem não exportar Decimal de jeito nenhum: o erro tem de ser claro
+            pytest.skip(f"Decimal não exportado pelo Polars {pl.__version__}")
+        raise
+    assert col.dtype == s.dtype
     assert col.width == width
     assert col.null_count == 1
     assert _bits(col) == [True, False]

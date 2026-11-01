@@ -19,6 +19,7 @@ levanta `UnsupportedTypeError`: não há caminho lento escondido.
 from __future__ import annotations
 
 import ctypes
+from collections.abc import Iterator
 from dataclasses import dataclass
 
 import numpy as np
@@ -60,7 +61,8 @@ class Column:
     """Os buffers de uma coluna do Polars, sem cópia (veja as convenções no topo do módulo)."""
 
     name: str
-    format: bytes
+    dtype: pl.DataType  # o tipo do Polars (o lógico, mesmo quando os buffers vieram da representação física)
+    format: bytes  # formato do Arrow dos buffers recebidos
     length: int
     null_count: int
     bit_offset: int
@@ -94,13 +96,35 @@ class Column:
         return out
 
 
+def _export_error(s: pl.Series) -> str:
+    """O erro do Polars ao exportar ``s`` (para a mensagem), ou vazio."""
+    try:
+        s.__arrow_c_stream__()
+    except Exception as e:  # só para descrever o problema na mensagem
+        return f" ({type(e).__name__}: {e})"
+    return ""
+
+
 def _single_chunk(s: pl.Series) -> Imported:
-    imp = import_series(s)
-    if imp is None:  # mais de um pedaço (ou o Polars não exportou): junta e tenta de novo
-        imp = import_series(s.rechunk())
-    if imp is None:
-        raise UnsupportedTypeError(f"coluna {s.name!r} ({s.dtype}): o Polars não a exportou pela interface C do Arrow")
-    return imp
+    # mais de um pedaço: junta e tenta de novo. Polars antigos (1.30) não exportam os tipos lógicos (Date, Datetime,
+    # Duration, Time, Decimal) pelo stream; aí vai a representação física (dias, microssegundos...), que é a mesma
+    # memória e é o que os kernels leem de qualquer jeito.
+    def candidates() -> Iterator[pl.Series]:  # preguiçoso: rechunk e to_physical só quando precisa
+        yield s
+        yield s.rechunk()
+        physical = s.to_physical()
+        if physical.dtype != s.dtype:
+            yield physical
+            yield physical.rechunk()
+
+    for candidate in candidates():
+        imp = import_series(candidate)
+        if imp is not None:
+            return imp
+    raise UnsupportedTypeError(
+        f"coluna {s.name!r} ({s.dtype}): o Polars {pl.__version__} não a exportou pela interface C do Arrow"
+        + _export_error(s)
+    )
 
 
 def import_column(s: pl.Series) -> Column:
@@ -114,7 +138,7 @@ def import_column(s: pl.Series) -> Column:
         null_count = 0 if validity is None else int(lib().dc_count_unset(validity, off, m))
 
     if fmt == _BOOL:
-        return Column(s.name, fmt, m, null_count, off, validity, imp.buffer(1), 0, (), (), imp)
+        return Column(s.name, s.dtype, fmt, m, null_count, off, validity, imp.buffer(1), 0, (), (), imp)
     if fmt in _VIEWS:
         k = nb - 3  # validade, views, k buffers de texto e, por último, o buffer com o tamanho de cada um
         views = imp.buffer(1)
@@ -126,7 +150,7 @@ def import_column(s: pl.Series) -> Column:
             sizes = tuple(int(x) for x in (ctypes.c_int64 * k).from_address(sizes_addr))
         texts = tuple(imp.buffer(2 + j) or 0 for j in range(k))
         data = None if views is None else views + 16 * off
-        return Column(s.name, fmt, m, null_count, off, validity, data, 16, texts, sizes, imp)
+        return Column(s.name, s.dtype, fmt, m, null_count, off, validity, data, 16, texts, sizes, imp)
     width = value_width(fmt)
     if width is None:
         raise UnsupportedTypeError(
@@ -134,4 +158,4 @@ def import_column(s: pl.Series) -> Column:
         )
     values = imp.buffer(1)
     data = None if values is None else values + width * off
-    return Column(s.name, fmt, m, null_count, off, validity, data, width, (), (), imp)
+    return Column(s.name, s.dtype, fmt, m, null_count, off, validity, data, width, (), (), imp)
