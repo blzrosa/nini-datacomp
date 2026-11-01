@@ -1,0 +1,145 @@
+name: wheels
+
+# Gera os wheels (um por sistema/arquitetura, tag py3-none-<plataforma>) e o sdist, e publica:
+# - no TestPyPI: Actions -> wheels -> Run workflow -> publish = testpypi (depois instala do TestPyPI em máquinas
+#   limpas dos três sistemas e roda um teste rápido);
+# - no PyPI: ao publicar uma release no GitHub.
+# Publicação confiável (OIDC, sem senha): no PyPI e no TestPyPI, cadastre o "trusted publisher" com dono blzrosa,
+# repositório nini-datacomp, workflow wheels.yml e ambiente pypi / testpypi (os ambientes existem no GitHub também).
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publicar em"
+        type: choice
+        options: [none, testpypi]
+        default: none
+  release:
+    types: [published]
+  pull_request:
+    paths: [CMakeLists.txt, pyproject.toml, "cpp/**", ".github/workflows/wheels.yml"]
+
+jobs:
+  wheels:
+    name: wheel ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # ubuntu-24.04-arm: aarch64 nativo (sem QEMU); macos-15-intel: x86_64 (o macos-13 foi desativado em 12/2025;
+        # o GitHub mantém Intel até o fim do macOS 15, previsto para o 2º semestre de 2027); macos-15: arm64 (o macos-14 é desativado em 02/11/2026).
+        # windows-11-arm: Windows ARM64 nativo (sem pyarrow, nada impede os wheels win_arm64).
+        # Lá o CPython oficial começa no 3.11 (o wheel py3 vale para qualquer versão) e a compilação é com o MSVC.
+        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, windows-11-arm, macos-15-intel, macos-15]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - uses: pypa/cibuildwheel@v3.1
+        env:
+          CIBW_ARCHS_LINUX: ${{ matrix.os == 'ubuntu-24.04-arm' && 'aarch64' || 'x86_64' }}
+          CIBW_ARCHS_WINDOWS: ${{ matrix.os == 'windows-11-arm' && 'ARM64' || 'AMD64' }}
+          CIBW_BUILD: ${{ matrix.os == 'windows-11-arm' && 'cp311-*' || 'cp310-*' }}
+          CIBW_ENVIRONMENT_WINDOWS: ${{ matrix.os == 'windows-11-arm' && 'DC_CLANGCL=0' || 'DC_CLANGCL=1' }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}
+          path: wheelhouse/*.whl
+
+  sdist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv build --sdist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+
+  publish-testpypi:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish == 'testpypi'
+    needs: [wheels, sdist]
+    runs-on: ubuntu-latest
+    environment: testpypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          skip-existing: true
+
+  # instala do TestPyPI numa máquina limpa (sem compilador, sem o repositório) e confere o pacote
+  smoke-testpypi:
+    needs: publish-testpypi
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, windows-11-arm, macos-15-intel, macos-15]
+        python: ["3.10", "3.14"]
+        exclude:
+          - os: windows-11-arm  # sem CPython ARM64 oficial antes do 3.11
+            python: "3.10"
+        include:
+          - os: windows-11-arm
+            python: "3.11"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: pyproject.toml
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: versão publicada
+        shell: bash
+        run: echo "VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml | head -1)" >> "$GITHUB_ENV"  # sem tomllib (3.11+)
+      - name: instala do TestPyPI (só wheel; as dependências vêm do PyPI)
+        shell: bash
+        run: |
+          # o índice do TestPyPI passa por um cache (CDN) que pode levar uns minutos para mostrar a versão nova:
+          # até ~15 min de novas tentativas, sem o cache do pip
+          for i in $(seq 1 30); do
+            python -m pip install --no-cache-dir --only-binary nini-datacomp --index-url https://test.pypi.org/simple/ \
+              --extra-index-url https://pypi.org/simple/ "nini-datacomp==$VERSION" && break
+            echo "ainda não disponível no índice (tentativa $i de 30); tentando de novo em 30 s"; sleep 30
+          done
+          python -m pip show nini-datacomp
+      - name: confere a biblioteca C++ e a leitura de colunas
+        shell: bash
+        working-directory: ${{ runner.temp }}
+        env:
+          PYTHONUTF8: "1"  # o console do Windows no CI é cp1252
+        run: |
+          python - <<'PY'
+          import polars as pl
+          import nini_datacomp as dc
+          from nini_datacomp._native import lib
+          from nini_datacomp._signatures import ABI_VERSION
+          from nini_datacomp.core.arrow import import_column
+
+          assert lib().dc_abi_version() == ABI_VERSION
+          col = import_column(pl.Series("x", [1, None, 3]))
+          assert col.null_count == 1
+          assert dc.pool_limit() > 0
+          print(dc.__version__, "ok")
+          PY
+
+  publish-pypi:
+    if: github.event_name == 'release'
+    needs: [wheels, sdist]
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@release/v1

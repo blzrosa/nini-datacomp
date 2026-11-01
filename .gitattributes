@@ -1,0 +1,4 @@
+# arquivos com bytes fixos em qualquer sistema (o Git no Windows trocaria LF por CRLF)
+*.json text eol=lf
+*.parquet binary
+*.zip binary

@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.10"
+      - run: uv sync
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run pyright
+      - run: uv run python tools/gen_bindings.py --check
+
+  test:
+    name: test (${{ matrix.os }}, py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # macos-latest já é ARM64 (Apple Silicon); ubuntu-24.04-arm: Linux ARM64 nativo (sem emulação)
+        # windows-11-arm: Windows ARM64 (compila com o MSVC; sem CPython ARM64 oficial antes do 3.11)
+        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, windows-11-arm, macos-latest]
+        python: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        exclude:
+          - os: windows-11-arm
+            python: "3.10"
+    env:  # no nível do job: o `uv run` recompilaria se a variável mudasse entre os passos
+      DC_CLANGCL: ${{ (matrix.python != '3.10' && matrix.os != 'windows-11-arm') && '1' || '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python }}
+      # compila o C++ (scikit-build-core + CMake) e instala o pacote no ambiente. No Windows, clang-cl (como os
+      # wheels), menos no Python 3.10, que fica com o MSVC para os dois compiladores serem testados.
+      - run: uv sync
+      - run: uv run pytest -m "not bench" --cov --cov-report=term-missing
+
+  min-deps:
+    # as versões mínimas declaradas (polars 1.30, pydantic 2.7, numpy 1.24...): a leitura das colunas pela interface C
+    # do Arrow testada na versão mais antiga do Polars que o pacote aceita, além da mais nova (que os outros jobs usam)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.10"
+      - run: uv sync --resolution lowest-direct
+      - run: uv pip list | grep -Ei "^(polars|numpy|pydantic) "
+      - run: uv run --no-sync pytest -m "not bench" -q -p no:cacheprovider
+
+  sanitizers:
+    # AddressSanitizer + UBSan nos kernels: pega escrita fora do buffer, que o ctypes não detecta
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - run: uv sync --no-install-project
+      - name: build com sanitizers
+        run: |
+          cmake -S . -B build/asan -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_CXX_COMPILER=g++ \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined"
+          cmake --build build/asan
+      - name: testes
+        env:
+          NINI_DATACOMP_LIB: ${{ github.workspace }}/build/asan/libdatacomp.so
+          PYTHONPATH: src
+          ASAN_OPTIONS: detect_leaks=0
+        run: |
+          export LD_PRELOAD="$(g++ -print-file-name=libasan.so)"
+          uv run pytest -m "not bench" -q -p no:cacheprovider

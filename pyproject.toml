@@ -1,0 +1,151 @@
+[build-system]
+requires = ["scikit-build-core>=0.11"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "nini-datacomp"
+version = "0.1.0.dev0"
+description = "Comparação de tabelas em escala: kernels C++ sobre as colunas do Polars, com janelas por chave e relatório."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "Nini (blzrosa)" }]
+keywords = ["polars", "dataframe", "compare", "diff", "reconciliation", "data-quality", "parquet", "datacompy"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Natural Language :: Portuguese (Brazilian)",
+    "Operating System :: OS Independent",
+    "Programming Language :: C++",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Quality Assurance",
+    "Typing :: Typed",
+]
+dependencies = [
+    "numpy>=1.24",
+    "polars>=1.30",
+    "pydantic>=2.7",
+    # sem pyarrow: as colunas vêm do Polars pela interface C do Arrow (PyCapsule), em core/arrow_c.py
+]
+
+[project.urls]
+Repository = "https://github.com/blzrosa/nini-datacomp"
+Issues = "https://github.com/blzrosa/nini-datacomp/issues"
+Changelog = "https://github.com/blzrosa/nini-datacomp/blob/main/CHANGELOG.md"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-cov>=5",
+    "ruff>=0.6",
+    "pyright>=1.1.380",
+    "psutil>=5.9",
+    # gabaritos e linha de base do benchmark (o datacompolars 0.4.4 é a referência) e dados de teste (nini-datagen)
+    "datacompolars==0.4.4",
+    "nini-datagen>=0.3.0",
+]
+
+# ------------------------------------------------------------------ uv
+[tool.uv]
+# `uv sync` / `uv run` recompilam o pacote (C++ incluído) quando algum destes arquivos muda
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "CMakeLists.txt" },
+    { file = "cpp/*.cpp" },
+    { file = "cpp/*.hpp" },
+    { file = "cpp/*.h" },
+    { env = "DC_CLANGCL" },
+    { env = "DC_NATIVE" },
+]
+
+# ------------------------------------------------------------------ build (C++ via CMake)
+[tool.scikit-build]
+minimum-version = "build-system.requires"
+cmake.version = ">=3.20"
+cmake.build-type = "Release"
+# a biblioteca é carregada por ctypes (não é uma extensão do CPython): um wheel por sistema/arquitetura, válido para
+# qualquer Python >= 3.10 (tag py3-none-<plataforma>)
+wheel.py-api = "py3"
+wheel.packages = ["src/nini_datacomp"]
+build-dir = "build/{wheel_tag}"
+sdist.include = ["cpp/*.cpp", "cpp/*.hpp", "cpp/*.h", "CMakeLists.txt", "NOTICE"]
+sdist.exclude = [".github", "build", "benchmarks", "data"]
+
+[tool.scikit-build.cmake.define]
+# DC_NATIVE=ON compila com -march=native (só para medir na própria máquina; nunca para publicar)
+DC_NATIVE = { env = "DC_NATIVE", default = "OFF" }
+
+[[tool.scikit-build.overrides]]
+# Windows com DC_CLANGCL=1: compila com clang-cl (o clang com a interface do MSVC) em vez do MSVC. Gera código bem
+# mais rápido nos kernels; é o que os wheels publicados usam. Precisa, no Visual Studio Installer, dos componentes
+# "C++ Clang Compiler for Windows" e "MSBuild support for LLVM (clang-cl) toolset".
+if.platform-system = "^win32"
+if.env.DC_CLANGCL = true
+cmake.args = ["-T", "ClangCL"]
+
+[tool.cibuildwheel]
+# um wheel por plataforma basta (tag py3); testa nele com o Python mais antigo suportado
+build = "cp310-*"
+skip = ["*-musllinux_i686", "*-win32", "*-manylinux_i686"]
+test-groups = ["dev"]
+test-command = "pytest {project}/tests -q -m \"not bench\" -p no:cacheprovider"
+build-frontend = "build[uv]"
+
+[tool.cibuildwheel.linux]
+archs = ["x86_64"]  # o workflow troca para aarch64 no runner ARM (sem emulação)
+
+[tool.cibuildwheel.macos]
+archs = ["native"]
+environment = { MACOSX_DEPLOYMENT_TARGET = "11.0" }
+
+[tool.cibuildwheel.windows]
+archs = ["AMD64"]
+environment = { DC_CLANGCL = "1" }
+
+# ------------------------------------------------------------------ qualidade
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+src = ["src", "tests", "tools"]
+extend-exclude = ["src/nini_datacomp/_signatures.py"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "PT", "N", "PL", "PERF", "C4"]
+ignore = [
+    "PLR0913",  # kernels C têm muitos argumentos
+    "PLR2004",  # números mágicos são comuns em formatos binários (larguras, offsets do Arrow)
+    "RUF001", "RUF002", "RUF003",  # textos em português com acentos e símbolos
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["PLR2004", "N802", "N803", "N806"]
+
+[tool.pyright]
+pythonVersion = "3.10"
+include = ["src", "tests", "tools"]
+typeCheckingMode = "standard"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["--strict-markers", "--strict-config", "-ra", "-m", "not bench"]  # benchmarks: pytest -m bench -s
+markers = [
+    "bench: benchmarks de desempenho (rodar com -m bench)",
+    "slow: testes demorados",
+]
+
+[tool.coverage.run]
+source = ["nini_datacomp"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+exclude_also = ["if TYPE_CHECKING:", "raise NotImplementedError", "@overload"]
