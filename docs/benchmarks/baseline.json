@@ -1,0 +1,2018 @@
+{
+  "columnwise/100/10": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "columnwise",
+    "peak_mb": {
+      "mean": 81.74466145833334,
+      "n": 30,
+      "sd": 0.23604265570025798
+    },
+    "seconds": {
+      "mean": 0.027029683333239518,
+      "n": 30,
+      "sd": 0.005595968662322776
+    },
+    "windows": 1
+  },
+  "columnwise/100/100": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "columnwise",
+    "peak_mb": {
+      "mean": 92.06106770833334,
+      "n": 30,
+      "sd": 0.4071678686917035
+    },
+    "seconds": {
+      "mean": 0.04447048000098827,
+      "n": 30,
+      "sd": 0.00968071379870957
+    },
+    "windows": 1
+  },
+  "columnwise/100/150": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "columnwise",
+    "peak_mb": {
+      "mean": 95.088671875,
+      "n": 30,
+      "sd": 0.5291989736010697
+    },
+    "seconds": {
+      "mean": 0.05338297666651973,
+      "n": 30,
+      "sd": 0.009860506046708942
+    },
+    "windows": 1
+  },
+  "columnwise/100/200": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "columnwise",
+    "peak_mb": {
+      "mean": 97.76809895833334,
+      "n": 30,
+      "sd": 0.634033985125723
+    },
+    "seconds": {
+      "mean": 0.06068492999960048,
+      "n": 30,
+      "sd": 0.0108461375793967
+    },
+    "windows": 1
+  },
+  "columnwise/100/250": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "columnwise",
+    "peak_mb": {
+      "mean": 100.326171875,
+      "n": 30,
+      "sd": 0.7065832921393406
+    },
+    "seconds": {
+      "mean": 0.06978548666811549,
+      "n": 30,
+      "sd": 0.012444653843500726
+    },
+    "windows": 1
+  },
+  "columnwise/100/300": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "columnwise",
+    "peak_mb": {
+      "mean": 103.17265625,
+      "n": 30,
+      "sd": 0.7223961991324518
+    },
+    "seconds": {
+      "mean": 0.07887868333103445,
+      "n": 30,
+      "sd": 0.008432942368891179
+    },
+    "windows": 1
+  },
+  "columnwise/100/50": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "columnwise",
+    "peak_mb": {
+      "mean": 88.35455729166667,
+      "n": 30,
+      "sd": 0.5281833826306784
+    },
+    "seconds": {
+      "mean": 0.03689637666587563,
+      "n": 30,
+      "sd": 0.011749101929382078
+    },
+    "windows": 1
+  },
+  "columnwise/1000/10": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "columnwise",
+    "peak_mb": {
+      "mean": 84.62096354166667,
+      "n": 30,
+      "sd": 0.21700030339420515
+    },
+    "seconds": {
+      "mean": 0.031147453333445204,
+      "n": 30,
+      "sd": 0.007076043067312734
+    },
+    "windows": 1
+  },
+  "columnwise/1000/100": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "columnwise",
+    "peak_mb": {
+      "mean": 108.11015625,
+      "n": 30,
+      "sd": 0.5794044919236601
+    },
+    "seconds": {
+      "mean": 0.06111161333489387,
+      "n": 30,
+      "sd": 0.007979994013490137
+    },
+    "windows": 1
+  },
+  "columnwise/1000/150": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "columnwise",
+    "peak_mb": {
+      "mean": 117.41497395833333,
+      "n": 30,
+      "sd": 1.0288500287242197
+    },
+    "seconds": {
+      "mean": 0.07270205666718539,
+      "n": 30,
+      "sd": 0.00894056134897665
+    },
+    "windows": 1
+  },
+  "columnwise/1000/200": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "columnwise",
+    "peak_mb": {
+      "mean": 125.45677083333334,
+      "n": 30,
+      "sd": 1.1212431909839833
+    },
+    "seconds": {
+      "mean": 0.09146000999899115,
+      "n": 30,
+      "sd": 0.014757342092972756
+    },
+    "windows": 1
+  },
+  "columnwise/1000/250": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "columnwise",
+    "peak_mb": {
+      "mean": 134.80572916666668,
+      "n": 30,
+      "sd": 1.293487675083752
+    },
+    "seconds": {
+      "mean": 0.11681605000145888,
+      "n": 30,
+      "sd": 0.056737017832748586
+    },
+    "windows": 1
+  },
+  "columnwise/1000/300": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "columnwise",
+    "peak_mb": {
+      "mean": 144.53177083333333,
+      "n": 30,
+      "sd": 2.619410832945964
+    },
+    "seconds": {
+      "mean": 0.12451170333564127,
+      "n": 30,
+      "sd": 0.014326670014223239
+    },
+    "windows": 1
+  },
+  "columnwise/1000/50": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "columnwise",
+    "peak_mb": {
+      "mean": 95.83645833333334,
+      "n": 30,
+      "sd": 0.5335603340519561
+    },
+    "seconds": {
+      "mean": 0.05680347333545797,
+      "n": 30,
+      "sd": 0.06757048941391769
+    },
+    "windows": 1
+  },
+  "columnwise/10000/10": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "columnwise",
+    "peak_mb": {
+      "mean": 96.23372395833333,
+      "n": 30,
+      "sd": 2.915701725635646
+    },
+    "seconds": {
+      "mean": 0.03738456333327728,
+      "n": 30,
+      "sd": 0.009586978999194777
+    },
+    "windows": 1
+  },
+  "columnwise/10000/100": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "columnwise",
+    "peak_mb": {
+      "mean": 172.33619791666666,
+      "n": 30,
+      "sd": 5.054109735595968
+    },
+    "seconds": {
+      "mean": 0.1045358500026244,
+      "n": 30,
+      "sd": 0.034026039861104376
+    },
+    "windows": 1
+  },
+  "columnwise/10000/150": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "columnwise",
+    "peak_mb": {
+      "mean": 203.97565104166668,
+      "n": 30,
+      "sd": 7.0250389895400875
+    },
+    "seconds": {
+      "mean": 0.12997041000053286,
+      "n": 30,
+      "sd": 0.0145128005268648
+    },
+    "windows": 1
+  },
+  "columnwise/10000/200": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "columnwise",
+    "peak_mb": {
+      "mean": 236.16393229166667,
+      "n": 30,
+      "sd": 4.505038248893718
+    },
+    "seconds": {
+      "mean": 0.1562999366656489,
+      "n": 30,
+      "sd": 0.012104655048974886
+    },
+    "windows": 1
+  },
+  "columnwise/10000/250": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "columnwise",
+    "peak_mb": {
+      "mean": 258.9712239583333,
+      "n": 30,
+      "sd": 7.533588236862598
+    },
+    "seconds": {
+      "mean": 0.1997983333315157,
+      "n": 30,
+      "sd": 0.07680551621131294
+    },
+    "windows": 1
+  },
+  "columnwise/10000/300": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "columnwise",
+    "peak_mb": {
+      "mean": 289.046484375,
+      "n": 30,
+      "sd": 6.499563377549629
+    },
+    "seconds": {
+      "mean": 0.2291723100002855,
+      "n": 30,
+      "sd": 0.018315531828079937
+    },
+    "windows": 1
+  },
+  "columnwise/10000/50": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "columnwise",
+    "peak_mb": {
+      "mean": 134.473828125,
+      "n": 30,
+      "sd": 3.534088720329379
+    },
+    "seconds": {
+      "mean": 0.06629209000384435,
+      "n": 30,
+      "sd": 0.010305935097146805
+    },
+    "windows": 1
+  },
+  "columnwise/100000/10": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "columnwise",
+    "peak_mb": {
+      "mean": 195.69401041666666,
+      "n": 30,
+      "sd": 4.769125685409042
+    },
+    "seconds": {
+      "mean": 0.07867308000083237,
+      "n": 30,
+      "sd": 0.015636259235161012
+    },
+    "windows": 1
+  },
+  "columnwise/100000/100": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "columnwise",
+    "peak_mb": {
+      "mean": 651.7069010416667,
+      "n": 30,
+      "sd": 20.405259270216863
+    },
+    "seconds": {
+      "mean": 0.3155870200037801,
+      "n": 30,
+      "sd": 0.015792664165854488
+    },
+    "windows": 1
+  },
+  "columnwise/100000/150": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "columnwise",
+    "peak_mb": {
+      "mean": 856.2516927083333,
+      "n": 30,
+      "sd": 22.478368135424326
+    },
+    "seconds": {
+      "mean": 0.4431723033369053,
+      "n": 30,
+      "sd": 0.008755616536969688
+    },
+    "windows": 1
+  },
+  "columnwise/100000/200": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "columnwise",
+    "peak_mb": {
+      "mean": 1018.183203125,
+      "n": 30,
+      "sd": 27.627852331582613
+    },
+    "seconds": {
+      "mean": 0.5735257266700501,
+      "n": 30,
+      "sd": 0.017803973346855073
+    },
+    "windows": 1
+  },
+  "columnwise/100000/250": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "columnwise",
+    "peak_mb": {
+      "mean": 1184.0440104166667,
+      "n": 30,
+      "sd": 23.838494377038263
+    },
+    "seconds": {
+      "mean": 0.7024454200009738,
+      "n": 30,
+      "sd": 0.036456086771644566
+    },
+    "windows": 1
+  },
+  "columnwise/100000/300": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "columnwise",
+    "peak_mb": {
+      "mean": 1353.5907552083333,
+      "n": 30,
+      "sd": 16.349307119584072
+    },
+    "seconds": {
+      "mean": 0.8149994733306812,
+      "n": 30,
+      "sd": 0.056684684902088125
+    },
+    "windows": 1
+  },
+  "columnwise/100000/50": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "columnwise",
+    "peak_mb": {
+      "mean": 424.55442708333334,
+      "n": 30,
+      "sd": 16.501748878115645
+    },
+    "seconds": {
+      "mean": 0.17676961999580573,
+      "n": 30,
+      "sd": 0.017478321468484038
+    },
+    "windows": 1
+  },
+  "columnwise/1000000/10": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "columnwise",
+    "peak_mb": {
+      "mean": 715.2375,
+      "n": 10,
+      "sd": 15.721885257580192
+    },
+    "seconds": {
+      "mean": 0.22875928999856115,
+      "n": 10,
+      "sd": 0.01914535012459371
+    },
+    "windows": 1
+  },
+  "columnwise/1000000/100": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "columnwise",
+    "peak_mb": {
+      "mean": 1382.493359375,
+      "n": 10,
+      "sd": 25.52918297524458
+    },
+    "seconds": {
+      "mean": 1.3262772100046276,
+      "n": 10,
+      "sd": 0.055404738816732774
+    },
+    "windows": 4
+  },
+  "columnwise/1000000/150": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "columnwise",
+    "peak_mb": {
+      "mean": 1353.56484375,
+      "n": 10,
+      "sd": 43.55316215565192
+    },
+    "seconds": {
+      "mean": 2.4071906600001967,
+      "n": 10,
+      "sd": 0.07258512355606794
+    },
+    "windows": 6
+  },
+  "columnwise/1000000/200": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "columnwise",
+    "peak_mb": {
+      "mean": 1525.48125,
+      "n": 10,
+      "sd": 37.979050948566055
+    },
+    "seconds": {
+      "mean": 3.068321940000169,
+      "n": 10,
+      "sd": 0.20721327344960264
+    },
+    "windows": 7
+  },
+  "columnwise/1000000/250": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "columnwise",
+    "peak_mb": {
+      "mean": 1495.032421875,
+      "n": 10,
+      "sd": 55.52552949188332
+    },
+    "seconds": {
+      "mean": 4.378547120001167,
+      "n": 10,
+      "sd": 0.23676485002228576
+    },
+    "windows": 9
+  },
+  "columnwise/1000000/300": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "columnwise",
+    "peak_mb": {
+      "mean": 1436.680078125,
+      "n": 10,
+      "sd": 37.62603262452034
+    },
+    "seconds": {
+      "mean": 5.577155879995553,
+      "n": 10,
+      "sd": 0.10605179748030871
+    },
+    "windows": 11
+  },
+  "columnwise/1000000/50": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "columnwise",
+    "peak_mb": {
+      "mean": 1403.957421875,
+      "n": 10,
+      "sd": 39.57666603876829
+    },
+    "seconds": {
+      "mean": 0.6642214699997566,
+      "n": 10,
+      "sd": 0.02482924138284279
+    },
+    "windows": 2
+  },
+  "columnwise/10000000/10": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "columnwise",
+    "peak_mb": {
+      "mean": 2109.9734375,
+      "n": 10,
+      "sd": 28.772223115796486
+    },
+    "seconds": {
+      "mean": 1.5858128399995621,
+      "n": 10,
+      "sd": 0.03637168536168013
+    },
+    "windows": 4
+  },
+  "columnwise/10000000/100": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "columnwise",
+    "peak_mb": {
+      "mean": 1674.58125,
+      "n": 10,
+      "sd": 70.70540669756767
+    },
+    "seconds": {
+      "mean": 14.891050559992436,
+      "n": 10,
+      "sd": 0.11024377667226885
+    },
+    "windows": 34
+  },
+  "columnwise/10000000/150": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "columnwise",
+    "peak_mb": {
+      "mean": 1599.082421875,
+      "n": 10,
+      "sd": 52.00164568815616
+    },
+    "seconds": {
+      "mean": 27.348441090001142,
+      "n": 10,
+      "sd": 0.2751855279585493
+    },
+    "windows": 51
+  },
+  "columnwise/10000000/200": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "columnwise",
+    "peak_mb": {
+      "mean": 1581.8234375,
+      "n": 10,
+      "sd": 47.48201613111696
+    },
+    "seconds": {
+      "mean": 42.411340989999005,
+      "n": 10,
+      "sd": 0.2121560180716277
+    },
+    "windows": 68
+  },
+  "columnwise/10000000/250": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "columnwise",
+    "peak_mb": {
+      "mean": 1512.5765625,
+      "n": 10,
+      "sd": 50.86308000884444
+    },
+    "seconds": {
+      "mean": 58.345755530003224,
+      "n": 10,
+      "sd": 0.24935738543225208
+    },
+    "windows": 84
+  },
+  "columnwise/10000000/300": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "columnwise",
+    "peak_mb": {
+      "mean": 1602.087890625,
+      "n": 10,
+      "sd": 50.790217699428595
+    },
+    "seconds": {
+      "mean": 75.14417386999703,
+      "n": 10,
+      "sd": 0.24133030787963572
+    },
+    "windows": 100
+  },
+  "columnwise/10000000/50": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "columnwise",
+    "peak_mb": {
+      "mean": 2082.5890625,
+      "n": 10,
+      "sd": 54.556107901586735
+    },
+    "seconds": {
+      "mean": 6.57159603999753,
+      "n": 10,
+      "sd": 0.04821846214260665
+    },
+    "windows": 18
+  },
+  "hash/100/10": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "hash",
+    "peak_mb": {
+      "mean": 82.46419270833333,
+      "n": 30,
+      "sd": 0.22215845208831517
+    },
+    "seconds": {
+      "mean": 0.030069459999989098,
+      "n": 30,
+      "sd": 0.004614912545021546
+    },
+    "windows": 1
+  },
+  "hash/100/100": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "hash",
+    "peak_mb": {
+      "mean": 96.70638020833333,
+      "n": 30,
+      "sd": 0.5339175422765724
+    },
+    "seconds": {
+      "mean": 0.050269999996332144,
+      "n": 30,
+      "sd": 0.011203497058323308
+    },
+    "windows": 1
+  },
+  "hash/100/150": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "hash",
+    "peak_mb": {
+      "mean": 101.078515625,
+      "n": 30,
+      "sd": 0.5138241946297725
+    },
+    "seconds": {
+      "mean": 0.054642986666294746,
+      "n": 30,
+      "sd": 0.011861347362925977
+    },
+    "windows": 1
+  },
+  "hash/100/200": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "hash",
+    "peak_mb": {
+      "mean": 106.13294270833333,
+      "n": 30,
+      "sd": 0.6476259489492215
+    },
+    "seconds": {
+      "mean": 0.06703420333506074,
+      "n": 30,
+      "sd": 0.014967693102537307
+    },
+    "windows": 1
+  },
+  "hash/100/250": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "hash",
+    "peak_mb": {
+      "mean": 111.509375,
+      "n": 30,
+      "sd": 0.8370669436534497
+    },
+    "seconds": {
+      "mean": 0.07199702000264854,
+      "n": 30,
+      "sd": 0.007572247115074716
+    },
+    "windows": 1
+  },
+  "hash/100/300": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "hash",
+    "peak_mb": {
+      "mean": 124.35182291666666,
+      "n": 30,
+      "sd": 3.7829480878997575
+    },
+    "seconds": {
+      "mean": 0.08451302999746986,
+      "n": 30,
+      "sd": 0.016375185415472945
+    },
+    "windows": 1
+  },
+  "hash/100/50": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "hash",
+    "peak_mb": {
+      "mean": 88.34635416666667,
+      "n": 30,
+      "sd": 0.2806569517719905
+    },
+    "seconds": {
+      "mean": 0.0380524533354522,
+      "n": 30,
+      "sd": 0.006583099889702701
+    },
+    "windows": 1
+  },
+  "hash/1000/10": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "hash",
+    "peak_mb": {
+      "mean": 85.86966145833334,
+      "n": 30,
+      "sd": 0.24082251285310513
+    },
+    "seconds": {
+      "mean": 0.03517328333400656,
+      "n": 30,
+      "sd": 0.0068129602269239595
+    },
+    "windows": 1
+  },
+  "hash/1000/100": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "hash",
+    "peak_mb": {
+      "mean": 115.96744791666667,
+      "n": 30,
+      "sd": 1.6631903161605692
+    },
+    "seconds": {
+      "mean": 0.06988923666649498,
+      "n": 30,
+      "sd": 0.008637024507229136
+    },
+    "windows": 1
+  },
+  "hash/1000/150": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "hash",
+    "peak_mb": {
+      "mean": 128.03697916666667,
+      "n": 30,
+      "sd": 3.3248888868354
+    },
+    "seconds": {
+      "mean": 0.07930037333377792,
+      "n": 30,
+      "sd": 0.009083648161899953
+    },
+    "windows": 1
+  },
+  "hash/1000/200": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "hash",
+    "peak_mb": {
+      "mean": 140.03880208333334,
+      "n": 30,
+      "sd": 3.990997435132163
+    },
+    "seconds": {
+      "mean": 0.0986565200020171,
+      "n": 30,
+      "sd": 0.013462344860675612
+    },
+    "windows": 1
+  },
+  "hash/1000/250": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "hash",
+    "peak_mb": {
+      "mean": 150.20234375,
+      "n": 30,
+      "sd": 4.222299602251027
+    },
+    "seconds": {
+      "mean": 0.11315682000034334,
+      "n": 30,
+      "sd": 0.016954580584278105
+    },
+    "windows": 1
+  },
+  "hash/1000/300": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "hash",
+    "peak_mb": {
+      "mean": 163.662109375,
+      "n": 30,
+      "sd": 4.778870591267483
+    },
+    "seconds": {
+      "mean": 0.14252441667000917,
+      "n": 30,
+      "sd": 0.05625710374632163
+    },
+    "windows": 1
+  },
+  "hash/1000/50": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "hash",
+    "peak_mb": {
+      "mean": 98.10572916666666,
+      "n": 30,
+      "sd": 0.44736714696012103
+    },
+    "seconds": {
+      "mean": 0.04549888333422132,
+      "n": 30,
+      "sd": 0.003995435511423554
+    },
+    "windows": 1
+  },
+  "hash/10000/10": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "hash",
+    "peak_mb": {
+      "mean": 98.60885416666666,
+      "n": 30,
+      "sd": 3.8747497047773596
+    },
+    "seconds": {
+      "mean": 0.043401240000578885,
+      "n": 30,
+      "sd": 0.0067184579483747665
+    },
+    "windows": 1
+  },
+  "hash/10000/100": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "hash",
+    "peak_mb": {
+      "mean": 176.82994791666667,
+      "n": 30,
+      "sd": 5.575011424928937
+    },
+    "seconds": {
+      "mean": 0.10790727666656798,
+      "n": 30,
+      "sd": 0.01841676282552638
+    },
+    "windows": 1
+  },
+  "hash/10000/150": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "hash",
+    "peak_mb": {
+      "mean": 218.59270833333332,
+      "n": 30,
+      "sd": 5.408971984761289
+    },
+    "seconds": {
+      "mean": 0.1365183699973083,
+      "n": 30,
+      "sd": 0.019353324752190704
+    },
+    "windows": 1
+  },
+  "hash/10000/200": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "hash",
+    "peak_mb": {
+      "mean": 254.65625,
+      "n": 30,
+      "sd": 8.567405557102022
+    },
+    "seconds": {
+      "mean": 0.17849022999580483,
+      "n": 30,
+      "sd": 0.06422309739113279
+    },
+    "windows": 1
+  },
+  "hash/10000/250": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "hash",
+    "peak_mb": {
+      "mean": 270.931640625,
+      "n": 30,
+      "sd": 7.919178234186854
+    },
+    "seconds": {
+      "mean": 0.21263243666714213,
+      "n": 30,
+      "sd": 0.05071391376583947
+    },
+    "windows": 1
+  },
+  "hash/10000/300": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "hash",
+    "peak_mb": {
+      "mean": 324.14544270833335,
+      "n": 30,
+      "sd": 11.107864120797938
+    },
+    "seconds": {
+      "mean": 0.2414857300017805,
+      "n": 30,
+      "sd": 0.024992674671614333
+    },
+    "windows": 1
+  },
+  "hash/10000/50": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "hash",
+    "peak_mb": {
+      "mean": 139.79401041666668,
+      "n": 30,
+      "sd": 3.7919106360038968
+    },
+    "seconds": {
+      "mean": 0.07744013666621564,
+      "n": 30,
+      "sd": 0.014704183394255325
+    },
+    "windows": 1
+  },
+  "hash/100000/10": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "hash",
+    "peak_mb": {
+      "mean": 183.54192708333332,
+      "n": 30,
+      "sd": 3.496905071250757
+    },
+    "seconds": {
+      "mean": 0.08593446000110513,
+      "n": 30,
+      "sd": 0.016927206468858442
+    },
+    "windows": 1
+  },
+  "hash/100000/100": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "hash",
+    "peak_mb": {
+      "mean": 578.4588541666667,
+      "n": 30,
+      "sd": 13.916782924941828
+    },
+    "seconds": {
+      "mean": 0.37384638999646996,
+      "n": 30,
+      "sd": 0.019349508406157723
+    },
+    "windows": 1
+  },
+  "hash/100000/150": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "hash",
+    "peak_mb": {
+      "mean": 745.640625,
+      "n": 30,
+      "sd": 20.890073304040083
+    },
+    "seconds": {
+      "mean": 0.5287759699965439,
+      "n": 30,
+      "sd": 0.018458968417863694
+    },
+    "windows": 1
+  },
+  "hash/100000/200": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "hash",
+    "peak_mb": {
+      "mean": 921.9102864583333,
+      "n": 30,
+      "sd": 25.21485956704355
+    },
+    "seconds": {
+      "mean": 0.6388654999978219,
+      "n": 30,
+      "sd": 0.024491312772565298
+    },
+    "windows": 1
+  },
+  "hash/100000/250": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "hash",
+    "peak_mb": {
+      "mean": 1082.7588541666667,
+      "n": 30,
+      "sd": 20.62228258770214
+    },
+    "seconds": {
+      "mean": 0.710768606668959,
+      "n": 30,
+      "sd": 0.03546621532375699
+    },
+    "windows": 1
+  },
+  "hash/100000/300": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "hash",
+    "peak_mb": {
+      "mean": 926.7446614583333,
+      "n": 30,
+      "sd": 18.005682548369833
+    },
+    "seconds": {
+      "mean": 0.5627400733336496,
+      "n": 30,
+      "sd": 0.020438663269351568
+    },
+    "windows": 1
+  },
+  "hash/100000/50": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "hash",
+    "peak_mb": {
+      "mean": 395.8736979166667,
+      "n": 30,
+      "sd": 11.856321727029133
+    },
+    "seconds": {
+      "mean": 0.2075556533333535,
+      "n": 30,
+      "sd": 0.010034177982031264
+    },
+    "windows": 1
+  },
+  "hash/1000000/10": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "hash",
+    "peak_mb": {
+      "mean": 700.553515625,
+      "n": 10,
+      "sd": 16.708273267122717
+    },
+    "seconds": {
+      "mean": 0.21854468000528868,
+      "n": 10,
+      "sd": 0.008139349076601177
+    },
+    "windows": 1
+  },
+  "hash/1000000/100": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "hash",
+    "peak_mb": {
+      "mean": 1156.3875,
+      "n": 10,
+      "sd": 22.520085375819548
+    },
+    "seconds": {
+      "mean": 0.7841013500030385,
+      "n": 10,
+      "sd": 0.02190103443950761
+    },
+    "windows": 4
+  },
+  "hash/1000000/150": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "hash",
+    "peak_mb": {
+      "mean": 1318.2609375,
+      "n": 10,
+      "sd": 24.200173543232484
+    },
+    "seconds": {
+      "mean": 1.4602900600031716,
+      "n": 10,
+      "sd": 0.15973376952129775
+    },
+    "windows": 6
+  },
+  "hash/1000000/200": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "hash",
+    "peak_mb": {
+      "mean": 1513.8609375,
+      "n": 10,
+      "sd": 40.821487273765364
+    },
+    "seconds": {
+      "mean": 2.4907949700049357,
+      "n": 10,
+      "sd": 0.050598457442484326
+    },
+    "windows": 7
+  },
+  "hash/1000000/250": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "hash",
+    "peak_mb": {
+      "mean": 1521.7984375,
+      "n": 10,
+      "sd": 29.6599161532986
+    },
+    "seconds": {
+      "mean": 3.744024760002503,
+      "n": 10,
+      "sd": 0.07406635681493103
+    },
+    "windows": 9
+  },
+  "hash/1000000/300": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "hash",
+    "peak_mb": {
+      "mean": 1589.2625,
+      "n": 10,
+      "sd": 24.307769780714963
+    },
+    "seconds": {
+      "mean": 4.617930450002314,
+      "n": 10,
+      "sd": 0.3624044399443578
+    },
+    "windows": 11
+  },
+  "hash/1000000/50": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "hash",
+    "peak_mb": {
+      "mean": 1041.365234375,
+      "n": 10,
+      "sd": 28.964379793125236
+    },
+    "seconds": {
+      "mean": 0.4076375799922971,
+      "n": 10,
+      "sd": 0.007908629631939348
+    },
+    "windows": 2
+  },
+  "hash/10000000/10": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "hash",
+    "peak_mb": {
+      "mean": 1763.36953125,
+      "n": 10,
+      "sd": 45.08936526407901
+    },
+    "seconds": {
+      "mean": 1.232070909999311,
+      "n": 10,
+      "sd": 0.09509446021916285
+    },
+    "windows": 4
+  },
+  "hash/10000000/100": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "hash",
+    "peak_mb": {
+      "mean": 1627.046875,
+      "n": 10,
+      "sd": 26.566717138685195
+    },
+    "seconds": {
+      "mean": 12.169658609994803,
+      "n": 10,
+      "sd": 0.14185931768332247
+    },
+    "windows": 34
+  },
+  "hash/10000000/150": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "hash",
+    "peak_mb": {
+      "mean": 1688.176171875,
+      "n": 10,
+      "sd": 35.67545566590106
+    },
+    "seconds": {
+      "mean": 18.081439689995022,
+      "n": 10,
+      "sd": 0.19985751226283408
+    },
+    "windows": 51
+  },
+  "hash/10000000/200": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "hash",
+    "peak_mb": {
+      "mean": 1723.4640625,
+      "n": 10,
+      "sd": 25.994428627853797
+    },
+    "seconds": {
+      "mean": 27.180518019999727,
+      "n": 10,
+      "sd": 0.33813930779661583
+    },
+    "windows": 68
+  },
+  "hash/10000000/250": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "hash",
+    "peak_mb": {
+      "mean": 1773.7890625,
+      "n": 10,
+      "sd": 23.38577879672752
+    },
+    "seconds": {
+      "mean": 38.19264401999826,
+      "n": 10,
+      "sd": 0.376673767928502
+    },
+    "windows": 84
+  },
+  "hash/10000000/300": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "hash",
+    "peak_mb": {
+      "mean": 1782.21484375,
+      "n": 10,
+      "sd": 21.791363861722676
+    },
+    "seconds": {
+      "mean": 50.34599574999593,
+      "n": 10,
+      "sd": 0.6015935313326277
+    },
+    "windows": 100
+  },
+  "hash/10000000/50": {
+    "machine": {
+      "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "datacompolars": "0.4.4",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "polars": "2.1.0",
+      "python": "3.12.13",
+      "ram_gb": 15.7,
+      "threads": 16
+    },
+    "ok": true,
+    "path": "hash",
+    "peak_mb": {
+      "mean": 1620.477734375,
+      "n": 10,
+      "sd": 35.42235243930385
+    },
+    "seconds": {
+      "mean": 6.221385349999764,
+      "n": 10,
+      "sd": 0.11546661784196265
+    },
+    "windows": 18
+  }
+}
