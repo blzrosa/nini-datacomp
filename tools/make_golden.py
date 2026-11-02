@@ -38,6 +38,12 @@ def columnwise(settings: dict[str, Any]) -> dict[str, Any]:
     return out  # tolerância global > 0: já é columnwise
 
 
+def _type_name(dtype: str) -> str:
+    """Só o nome do tipo: o texto dos parâmetros muda entre versões do Polars ("Categorical" no 1.30,
+    "Categorical(ordering='physical')" ou com as categorias em outras), e o gabarito não pode depender disso."""
+    return dtype.split("(", 1)[0]
+
+
 def run(case: Case) -> dict[str, Any]:
     """O resultado do datacompolars para o caso, num dicionário pronto para JSON."""
     from datacompolars import CompareSettings, compare  # noqa: PLC0415 - só ferramentas e testes de gabarito
@@ -63,7 +69,9 @@ def run(case: Case) -> dict[str, Any]:
             "compared": res.columns.compared,
             "left_only": res.columns.left_only,
             "right_only": res.columns.right_only,
-            "type_mismatches": [[t.column, t.left, t.right] for t in res.columns.type_mismatches],
+            "type_mismatches": [
+                [t.column, _type_name(t.left), _type_name(t.right)] for t in res.columns.type_mismatches
+            ],
         },
         "column_mismatches": {st.column: st.mismatches for st in res.column_stats},
         "samples": {t.column: t.rows for t in res.samples},
