@@ -56,3 +56,18 @@ Formato: [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/); versões: 
   decodificado duas vezes. As linhas de cada row group vêm do rodapé do Parquet, lido por `cpp/parquet_meta.cpp`
   (`dc_parquet_row_groups`, Thrift compacto, sem pyarrow).
 - `io.py`: fontes Parquet (arquivo, pasta com subpastas, glob), `pl.DataFrame` e `pl.LazyFrame`; CSV e SAS na fase 6.
+
+### Fase 1c — caminho completo: contagem de linhas por janelas
+- `pipeline.py`: `count_rows(left, right, on, memory_limit=..., window_rows=..., columns=...)` abre as fontes, confere
+  a chave (Categorical/Enum viram texto; tipos diferentes nos dois lados = erro claro), planeja as janelas, lê cada uma
+  pelo Polars e alinha as chaves no C++, somando as contagens. `WindowReader` lê a janela k+1 numa thread enquanto a k
+  é processada (no máximo duas em memória), e é a base das fases 2 e 3.
+- A primeira janela só leva a cláusula "ou chave nula" quando algum lado tem chave nula: o "ou" impedia o Polars de
+  pular row groups pelas estatísticas, e a primeira janela leria a tabela inteira.
+- `tools/bench_rows.py`: memória e tempo de 1M a 10M linhas (chave inteira e chave de texto), cada execução num
+  processo novo; resultado em `docs/benchmarks/fase1.{md,json}`.
+- Medido no primeiro benchmark (`memory_limit = 1GB`): contagens certas em tudo, mas pico de 1,6–2,1 GB em 10M linhas,
+  crescendo com as linhas. Corrigido no planejamento: ele não carrega mais todas as chaves (nem cópias ordenadas) —
+  só conta as linhas numa passada, lê a chave do começo de cada row group (Parquet em ordem) ou uma amostra de até 200
+  mil chaves; a janela passa a contar 4 cópias vivas no pico (medido), não 2; e a base é o lado em ordem no disco
+  (antes era sempre o maior, que no make_data tem os arquivos extra-* fora de ordem).
