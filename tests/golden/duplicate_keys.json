@@ -1,0 +1,31 @@
+{
+  "case": "duplicate_keys",
+  "description": "chave repetida à esquerda: erro fatal",
+  "settings": {
+    "join_columns": [
+      "id"
+    ]
+  },
+  "source": "datacompolars 0.4.4 (columnwise)",
+  "aborted": true,
+  "fatal_errors": 1,
+  "path": "columnwise",
+  "rows": {
+    "left_total": 0,
+    "right_total": 0,
+    "common": 0,
+    "left_only": 0,
+    "right_only": 0,
+    "mismatched": 0
+  },
+  "columns": {
+    "compared": [
+      "v"
+    ],
+    "left_only": [],
+    "right_only": [],
+    "type_mismatches": []
+  },
+  "column_mismatches": {},
+  "samples": {}
+}

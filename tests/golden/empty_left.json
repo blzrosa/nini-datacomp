@@ -1,0 +1,31 @@
+{
+  "case": "empty_left",
+  "description": "lado esquerdo vazio",
+  "settings": {
+    "join_columns": [
+      "id"
+    ]
+  },
+  "source": "datacompolars 0.4.4 (columnwise)",
+  "aborted": false,
+  "fatal_errors": 0,
+  "path": "columnwise",
+  "rows": {
+    "left_total": 0,
+    "right_total": 3,
+    "common": 0,
+    "left_only": 0,
+    "right_only": 3,
+    "mismatched": 0
+  },
+  "columns": {
+    "compared": [
+      "v"
+    ],
+    "left_only": [],
+    "right_only": [],
+    "type_mismatches": []
+  },
+  "column_mismatches": {},
+  "samples": {}
+}

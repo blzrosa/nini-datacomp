@@ -131,10 +131,12 @@ ignore = [
 [tool.pyright]
 pythonVersion = "3.10"
 include = ["src", "tests", "tools"]
+extraPaths = ["tools"]  # os testes importam as ferramentas (make_data, cases...)
 typeCheckingMode = "standard"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["tools"]  # os testes importam as ferramentas (make_data, cases...)
 addopts = ["--strict-markers", "--strict-config", "-ra", "-m", "not bench"]  # benchmarks: pytest -m bench -s
 markers = [
     "bench: benchmarks de desempenho (rodar com -m bench)",

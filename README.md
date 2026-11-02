@@ -18,6 +18,14 @@ uv run ruff format . && uv run ruff check . && uv run pyright
 uv run python tools/gen_bindings.py        # depois de mudar a assinatura de uma função C++
 ```
 
+Ferramentas (`tools/`):
+
+| comando | o que faz |
+|---|---|
+| `uv run python tools/make_data.py --rows 1000000 --cols 50` | gera um par de tabelas com o resultado esperado (`data/bench/`) |
+| `uv run python tools/make_golden.py` | regrava os gabaritos dos casos de borda (`tests/golden/`) com o datacompolars 0.4.4 |
+| `uv run python tools/bench_baseline.py` | mede a linha de base (datacompolars 0.4.4) e escreve `docs/benchmarks/baseline.md` |
+
 No Windows, para compilar como os wheels: `$env:DC_CLANGCL = "1"` antes do `uv sync` (precisa dos componentes
 "C++ Clang Compiler for Windows" e "MSBuild support for LLVM (clang-cl) toolset" no Visual Studio Installer).
 

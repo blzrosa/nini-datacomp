@@ -1,0 +1,35 @@
+{
+  "case": "categorical_vs_string",
+  "description": "Categorical x String, sem conversão",
+  "settings": {
+    "join_columns": [
+      "id"
+    ]
+  },
+  "source": "datacompolars 0.4.4 (columnwise)",
+  "aborted": false,
+  "fatal_errors": 0,
+  "path": "columnwise",
+  "rows": {
+    "left_total": 3,
+    "right_total": 3,
+    "common": 3,
+    "left_only": 0,
+    "right_only": 0,
+    "mismatched": 0
+  },
+  "columns": {
+    "compared": [],
+    "left_only": [],
+    "right_only": [],
+    "type_mismatches": [
+      [
+        "c",
+        "Categorical",
+        "String"
+      ]
+    ]
+  },
+  "column_mismatches": {},
+  "samples": {}
+}

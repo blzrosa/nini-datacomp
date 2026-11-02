@@ -1,0 +1,70 @@
+{
+  "case": "floats",
+  "description": "-0.0 = 0.0, NaN = NaN (qualquer payload), infinitos, nulo x valor",
+  "settings": {
+    "join_columns": [
+      "id"
+    ]
+  },
+  "source": "datacompolars 0.4.4 (columnwise)",
+  "aborted": false,
+  "fatal_errors": 0,
+  "path": "columnwise",
+  "rows": {
+    "left_total": 10,
+    "right_total": 10,
+    "common": 10,
+    "left_only": 0,
+    "right_only": 0,
+    "mismatched": 4
+  },
+  "columns": {
+    "compared": [
+      "f64",
+      "f32"
+    ],
+    "left_only": [],
+    "right_only": [],
+    "type_mismatches": []
+  },
+  "column_mismatches": {
+    "f64": 4,
+    "f32": 2
+  },
+  "samples": {
+    "f64": [
+      [
+        5,
+        -Infinity,
+        Infinity
+      ],
+      [
+        7,
+        null,
+        1.0
+      ],
+      [
+        8,
+        1e-300,
+        0.0
+      ],
+      [
+        9,
+        0.30000000000000004,
+        0.3
+      ]
+    ],
+    "f32": [
+      [
+        5,
+        -Infinity,
+        Infinity
+      ],
+      [
+        7,
+        null,
+        1.0
+      ]
+    ]
+  }
+}

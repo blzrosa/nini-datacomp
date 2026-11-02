@@ -1,0 +1,42 @@
+{
+  "case": "categorical_cast_right",
+  "description": "Categorical x String convertendo a esquerda para o tipo da direita",
+  "settings": {
+    "join_columns": [
+      "id"
+    ],
+    "casting": "right"
+  },
+  "source": "datacompolars 0.4.4 (columnwise)",
+  "aborted": false,
+  "fatal_errors": 0,
+  "path": "columnwise",
+  "rows": {
+    "left_total": 3,
+    "right_total": 3,
+    "common": 3,
+    "left_only": 0,
+    "right_only": 0,
+    "mismatched": 1
+  },
+  "columns": {
+    "compared": [
+      "c"
+    ],
+    "left_only": [],
+    "right_only": [],
+    "type_mismatches": []
+  },
+  "column_mismatches": {
+    "c": 1
+  },
+  "samples": {
+    "c": [
+      [
+        3,
+        "z",
+        "w"
+      ]
+    ]
+  }
+}

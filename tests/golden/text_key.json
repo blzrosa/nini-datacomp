@@ -1,0 +1,41 @@
+{
+  "case": "text_key",
+  "description": "chave de texto (inclui vazio e acentos)",
+  "settings": {
+    "join_columns": [
+      "codigo"
+    ]
+  },
+  "source": "datacompolars 0.4.4 (columnwise)",
+  "aborted": false,
+  "fatal_errors": 0,
+  "path": "columnwise",
+  "rows": {
+    "left_total": 5,
+    "right_total": 5,
+    "common": 4,
+    "left_only": 1,
+    "right_only": 1,
+    "mismatched": 1
+  },
+  "columns": {
+    "compared": [
+      "v"
+    ],
+    "left_only": [],
+    "right_only": [],
+    "type_mismatches": []
+  },
+  "column_mismatches": {
+    "v": 1
+  },
+  "samples": {
+    "v": [
+      [
+        "ção",
+        4,
+        40
+      ]
+    ]
+  }
+}

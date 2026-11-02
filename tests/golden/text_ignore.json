@@ -1,0 +1,48 @@
+{
+  "case": "text_ignore",
+  "description": "o mesmo texto com ignore_case e ignore_spaces",
+  "settings": {
+    "join_columns": [
+      "id"
+    ],
+    "ignore_case": true,
+    "ignore_spaces": true
+  },
+  "source": "datacompolars 0.4.4 (columnwise)",
+  "aborted": false,
+  "fatal_errors": 0,
+  "path": "columnwise",
+  "rows": {
+    "left_total": 9,
+    "right_total": 9,
+    "common": 9,
+    "left_only": 0,
+    "right_only": 0,
+    "mismatched": 2
+  },
+  "columns": {
+    "compared": [
+      "s"
+    ],
+    "left_only": [],
+    "right_only": [],
+    "type_mismatches": []
+  },
+  "column_mismatches": {
+    "s": 2
+  },
+  "samples": {
+    "s": [
+      [
+        5,
+        "",
+        null
+      ],
+      [
+        8,
+        "um texto bem maior que doze",
+        "um texto bem maior que doze!"
+      ]
+    ]
+  }
+}

@@ -1,0 +1,82 @@
+{
+  "case": "basic",
+  "description": "tipos básicos com nulos, divergências e linhas exclusivas",
+  "settings": {
+    "join_columns": [
+      "id"
+    ]
+  },
+  "source": "datacompolars 0.4.4 (columnwise)",
+  "aborted": false,
+  "fatal_errors": 0,
+  "path": "columnwise",
+  "rows": {
+    "left_total": 8,
+    "right_total": 8,
+    "common": 7,
+    "left_only": 1,
+    "right_only": 1,
+    "mismatched": 6
+  },
+  "columns": {
+    "compared": [
+      "i",
+      "f",
+      "s",
+      "b",
+      "d"
+    ],
+    "left_only": [],
+    "right_only": [],
+    "type_mismatches": []
+  },
+  "column_mismatches": {
+    "i": 2,
+    "b": 1,
+    "d": 1,
+    "f": 1,
+    "s": 1
+  },
+  "samples": {
+    "i": [
+      [
+        2,
+        20,
+        21
+      ],
+      [
+        6,
+        60,
+        null
+      ]
+    ],
+    "b": [
+      [
+        5,
+        true,
+        false
+      ]
+    ],
+    "d": [
+      [
+        4,
+        "2026-01-04",
+        "2026-01-05"
+      ]
+    ],
+    "f": [
+      [
+        7,
+        7.5,
+        7.25
+      ]
+    ],
+    "s": [
+      [
+        3,
+        "c",
+        "C"
+      ]
+    ]
+  }
+}

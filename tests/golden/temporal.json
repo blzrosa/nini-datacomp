@@ -1,0 +1,68 @@
+{
+  "case": "temporal",
+  "description": "Datetime, Duration, Time e Decimal",
+  "settings": {
+    "join_columns": [
+      "id"
+    ]
+  },
+  "source": "datacompolars 0.4.4 (columnwise)",
+  "aborted": false,
+  "fatal_errors": 0,
+  "path": "columnwise",
+  "rows": {
+    "left_total": 3,
+    "right_total": 3,
+    "common": 3,
+    "left_only": 0,
+    "right_only": 0,
+    "mismatched": 2
+  },
+  "columns": {
+    "compared": [
+      "dt",
+      "du",
+      "tm",
+      "dec"
+    ],
+    "left_only": [],
+    "right_only": [],
+    "type_mismatches": []
+  },
+  "column_mismatches": {
+    "dec": 1,
+    "dt": 1,
+    "du": 1,
+    "tm": 1
+  },
+  "samples": {
+    "dec": [
+      [
+        2,
+        "2.50",
+        "2.51"
+      ]
+    ],
+    "dt": [
+      [
+        2,
+        "2026-01-02 00:00:00",
+        "2026-01-02 00:00:01"
+      ]
+    ],
+    "du": [
+      [
+        2,
+        "0:00:00",
+        "0:00:00.000001"
+      ]
+    ],
+    "tm": [
+      [
+        3,
+        "23:59:59",
+        "23:59:58"
+      ]
+    ]
+  }
+}

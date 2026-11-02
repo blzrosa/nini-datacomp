@@ -1,0 +1,61 @@
+{
+  "case": "text_exact",
+  "description": "texto: caixa, espaços, NBSP, vazio x nulo, emoji, longo",
+  "settings": {
+    "join_columns": [
+      "id"
+    ]
+  },
+  "source": "datacompolars 0.4.4 (columnwise)",
+  "aborted": false,
+  "fatal_errors": 0,
+  "path": "columnwise",
+  "rows": {
+    "left_total": 9,
+    "right_total": 9,
+    "common": 9,
+    "left_only": 0,
+    "right_only": 0,
+    "mismatched": 7
+  },
+  "columns": {
+    "compared": [
+      "s"
+    ],
+    "left_only": [],
+    "right_only": [],
+    "type_mismatches": []
+  },
+  "column_mismatches": {
+    "s": 7
+  },
+  "samples": {
+    "s": [
+      [
+        0,
+        "São Paulo",
+        "SÃO PAULO"
+      ],
+      [
+        1,
+        "praia grande",
+        "Praia Grande"
+      ],
+      [
+        2,
+        "a b",
+        "ab"
+      ],
+      [
+        3,
+        "x ",
+        "x"
+      ],
+      [
+        4,
+        " nbsp",
+        "nbsp"
+      ]
+    ]
+  }
+}

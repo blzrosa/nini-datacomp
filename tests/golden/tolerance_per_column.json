@@ -1,0 +1,61 @@
+{
+  "case": "tolerance_per_column",
+  "description": "tolerância só numa coluna",
+  "settings": {
+    "join_columns": [
+      "id"
+    ],
+    "abs_tol": {
+      "a": 0.5
+    },
+    "rel_tol": {
+      "r": 0.125
+    }
+  },
+  "source": "datacompolars 0.4.4 (columnwise)",
+  "aborted": false,
+  "fatal_errors": 0,
+  "path": "columnwise",
+  "rows": {
+    "left_total": 5,
+    "right_total": 5,
+    "common": 5,
+    "left_only": 0,
+    "right_only": 0,
+    "mismatched": 2
+  },
+  "columns": {
+    "compared": [
+      "a",
+      "r"
+    ],
+    "left_only": [],
+    "right_only": [],
+    "type_mismatches": []
+  },
+  "column_mismatches": {
+    "r": 2,
+    "a": 1
+  },
+  "samples": {
+    "r": [
+      [
+        2,
+        8.0,
+        7.0
+      ],
+      [
+        3,
+        8.0,
+        10.0
+      ]
+    ],
+    "a": [
+      [
+        2,
+        1.0,
+        1.75
+      ]
+    ]
+  }
+}

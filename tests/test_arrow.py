@@ -102,7 +102,7 @@ def test_booleans_are_bits() -> None:
     nbytes = (col.bit_offset + col.length + 7) // 8
     raw = np.frombuffer(ctypes.string_at(col.data, nbytes), np.uint8)
     bits = np.unpackbits(raw, bitorder="little")[col.bit_offset : col.bit_offset + col.length]
-    got = [None if not ok else bool(b) for b, ok in zip(bits, _bits(col), strict=False)]
+    got = [None if not ok else bool(b) for b, ok in zip(bits, _bits(col), strict=True)]
     assert got == s.to_list()
 
 

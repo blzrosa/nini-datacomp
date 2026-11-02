@@ -1,0 +1,61 @@
+{
+  "case": "tolerance_abs",
+  "description": "tolerância absoluta exatamente na borda",
+  "settings": {
+    "join_columns": [
+      "id"
+    ],
+    "abs_tol": 0.5
+  },
+  "source": "datacompolars 0.4.4 (columnwise)",
+  "aborted": false,
+  "fatal_errors": 0,
+  "path": "columnwise",
+  "rows": {
+    "left_total": 5,
+    "right_total": 5,
+    "common": 5,
+    "left_only": 0,
+    "right_only": 0,
+    "mismatched": 3
+  },
+  "columns": {
+    "compared": [
+      "a",
+      "r"
+    ],
+    "left_only": [],
+    "right_only": [],
+    "type_mismatches": []
+  },
+  "column_mismatches": {
+    "r": 3,
+    "a": 1
+  },
+  "samples": {
+    "r": [
+      [
+        1,
+        8.0,
+        9.0
+      ],
+      [
+        2,
+        8.0,
+        7.0
+      ],
+      [
+        3,
+        8.0,
+        10.0
+      ]
+    ],
+    "a": [
+      [
+        2,
+        1.0,
+        1.75
+      ]
+    ]
+  }
+}
