@@ -52,6 +52,8 @@ dev = [
     "datacompolars==0.4.4",
     "nini-datagen>=0.3.0",
 ]
+# fase 0c (tools/read_experiment.py): o leitor C++ do Apache Arrow como referência. O pacote não usa o pyarrow.
+bench = ["pyarrow>=19"]
 
 # ------------------------------------------------------------------ uv
 [tool.uv]
