@@ -131,11 +131,14 @@ def _single_chunk(s: pl.Series) -> Imported:
 
 def import_column(s: pl.Series) -> Column:
     """Os buffers de ``s``, sem cópia. Levanta `UnsupportedTypeError` para tipos fora da lista da 0.1."""
+    # codificada por dicionário: os buffers seriam códigos, e o mesmo texto tem códigos diferentes em cada tabela.
+    # Recusa pelo tipo antes de exportar (o Polars 1.30 nem exporta Categorical) e de novo pelo formato exportado.
+    dictionary = f"coluna {s.name!r} ({s.dtype}) é codificada por dicionário: converta para String (cast(pl.String))"
+    if isinstance(s.dtype, (pl.Categorical, pl.Enum)):
+        raise UnsupportedTypeError(dictionary)
     imp = _single_chunk(s)
-    if imp.dictionary:  # os buffers seriam códigos, e o mesmo texto tem códigos diferentes em cada tabela
-        raise UnsupportedTypeError(
-            f"coluna {s.name!r} ({s.dtype}) é codificada por dicionário: converta para String antes (cast(pl.String))"
-        )
+    if imp.dictionary:
+        raise UnsupportedTypeError(dictionary)
     fmt, arr = imp.format, imp.array
     off, m, nb = int(arr.offset), int(arr.length), int(arr.n_buffers)
     validity = imp.buffer(0) if nb else None
