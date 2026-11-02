@@ -17,12 +17,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
 from typing import Any
+
+# o alocador do Polars como o nini_datacomp o configura no import (core/allocator.py); aqui o Polars é importado antes,
+# então a variável vai direto no ambiente, que os subprocessos herdam
+os.environ.setdefault("MIMALLOC_PURGE_DELAY", "0")
+os.environ.setdefault("MIMALLOC_RESET_DELAY", "0")  # as duas, como o pacote (core/allocator.SETTINGS)
 
 import polars as pl
 import psutil
@@ -134,6 +140,9 @@ def report(results: dict[str, list[dict[str, Any]]], memory_limit: str) -> None:
         "# Fase 1c: memória e tempo do caminho completo (contagem de linhas)",
         "",
         f"`memory_limit = {memory_limit}`. Média ± meia largura do IC de 95%, cada execução num processo novo.",
+        f"Alocador do Polars: `MIMALLOC_PURGE_DELAY={os.environ.get('MIMALLOC_PURGE_DELAY', '-')}`, "
+        f"`MIMALLOC_RESET_DELAY={os.environ.get('MIMALLOC_RESET_DELAY', '-')}` (o que o nini_datacomp configura no "
+        "import; o datacompolars foi medido sem).",
         "O nini-datacomp lê todas as colunas de cada janela, mas só conta as linhas (os valores ainda não são",
         "comparados): o tempo do datacompolars (caminho hash, que compara tudo) é só referência. O que esta fase",
         "promete é a memória não crescer com as linhas. `t` = chave em texto.",

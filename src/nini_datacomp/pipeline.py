@@ -16,6 +16,7 @@ from collections import defaultdict
 from collections.abc import Iterator, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
+from typing import Literal
 
 import polars as pl
 
@@ -24,7 +25,9 @@ from .core.keys import align_keys
 from .io import Source, SourceLike, open_source
 from .windows import Plan, Window, plan_windows
 
-__all__ = ["RowCounts", "WindowReader", "count_rows", "prepare_keys"]
+__all__ = ["Engine", "RowCounts", "WindowReader", "count_rows", "prepare_keys"]
+
+Engine = Literal["auto", "in-memory", "streaming"]
 
 
 def _is_dictionary(dtype: pl.DataType) -> bool:
@@ -71,8 +74,11 @@ class _Timer:
 class WindowReader:
     """Itera ``(janela, esquerda, direita)`` com os dois lados de cada janela já em memória; lê a seguinte em paralelo.
 
+    Quem itera precisa soltar as duas tabelas de uma janela (``del``) antes de pedir a próxima: o leitor já está lendo
+    a seguinte, e uma referência que sobra na variável do laço é uma terceira janela em memória.
+
     ``columns_left``/``columns_right``: as colunas lidas (a chave sempre entra). ``prefetch=False`` lê uma janela por
-    vez (menos memória, sem sobrepor leitura e comparação).
+    vez (menos memória, sem sobrepor leitura e comparação). ``engine``: o engine do ``collect`` do Polars nas janelas.
     """
 
     def __init__(
@@ -86,12 +92,14 @@ class WindowReader:
         columns_left: Sequence[str] | None = None,
         columns_right: Sequence[str] | None = None,
         prefetch: bool = True,
+        engine: Engine = "auto",
     ) -> None:
         self.left, self.right, self.plan = left, right, plan
         self.keys, self.dtypes = list(keys), list(dtypes)
         self.columns_left = _with_keys(columns_left, keys)
         self.columns_right = _with_keys(columns_right, keys)
         self.prefetch = prefetch
+        self.engine: Engine = engine
         self.timer = _Timer()
         self.window_bytes = 0  # maior janela lida (os dois lados), pelo tamanho estimado do Polars
 
@@ -103,7 +111,7 @@ class WindowReader:
         lf = src.lazy if pred is None else src.lazy.filter(pred)
         if columns is not None:
             lf = lf.select(columns)
-        return lf.collect()
+        return lf.collect(engine=self.engine)
 
     def _read(self, window: Window) -> tuple[Window, pl.DataFrame, pl.DataFrame, float]:
         t = time.perf_counter()
@@ -178,6 +186,7 @@ def count_rows(
     window_rows: int | None = None,
     columns: Sequence[str] | None = None,
     prefetch: bool = True,
+    engine: Engine = "auto",
 ) -> RowCounts:
     """Linhas em comum, só de um lado e repetidas, por janelas que cabem em ``memory_limit``.
 
@@ -195,7 +204,9 @@ def count_rows(
     plan = plan_windows(ls, rs, keys, memory_limit, window_rows=window_rows)
     plan_s = time.perf_counter() - t
 
-    reader = WindowReader(ls, rs, plan, keys, dtypes, columns_left=columns, columns_right=columns, prefetch=prefetch)
+    reader = WindowReader(
+        ls, rs, plan, keys, dtypes, columns_left=columns, columns_right=columns, prefetch=prefetch, engine=engine
+    )
     totals = defaultdict(int)
     strategies: dict[str, int] = defaultdict(int)
     align_s = 0.0
@@ -208,6 +219,9 @@ def count_rows(
         totals["right"] += rf.height
         for name in ("common", "only_left", "only_right", "dup_left", "dup_right"):
             totals[name] += getattr(a, name)
+        # soltar a janela antes de pedir a próxima: senão, enquanto o leitor entrega a k+1 e já lê a k+2, esta k
+        # continua viva pela variável do laço (três janelas em memória, não duas; medido: ~+200 MB em 10M linhas)
+        del lf, rf, a
 
     timings = {"plan": plan_s, "align": align_s, **reader.timer.seconds, "total": time.perf_counter() - t0}
     aborted = bool(totals["dup_left"] or totals["dup_right"])

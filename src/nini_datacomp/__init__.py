@@ -8,8 +8,13 @@ from __future__ import annotations
 
 from importlib import metadata
 
-from .core.memory import pool_limit, pool_stats, release_memory
-from .errors import NativeLibraryError, UnsupportedTypeError
+# antes de qualquer import do Polars: o alocador dele lê a configuração uma vez só, quando carrega
+from .core.allocator import configure as _configure_allocator
+
+ALLOCATOR_STATUS = _configure_allocator()
+
+from .core.memory import pool_limit, pool_stats, release_memory  # noqa: E402
+from .errors import AllocatorWarning, NativeLibraryError, UnsupportedTypeError  # noqa: E402
 
 try:
     __version__ = metadata.version("nini-datacomp")
@@ -17,6 +22,8 @@ except metadata.PackageNotFoundError:  # pragma: no cover (rodando de src/ sem i
     __version__ = "0+desconhecida"
 
 __all__ = [
+    "ALLOCATOR_STATUS",
+    "AllocatorWarning",
     "NativeLibraryError",
     "UnsupportedTypeError",
     "__version__",

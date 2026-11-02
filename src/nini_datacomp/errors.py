@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-__all__ = ["NativeLibraryError", "UnsupportedTypeError"]
+__all__ = ["AllocatorWarning", "NativeLibraryError", "UnsupportedTypeError"]
 
 
 class NativeLibraryError(RuntimeError):
@@ -11,3 +11,7 @@ class NativeLibraryError(RuntimeError):
 
 class UnsupportedTypeError(TypeError):
     """Coluna de um tipo que os kernels C++ não leem (o pacote não tem caminho lento escondido para ela)."""
+
+
+class AllocatorWarning(UserWarning):
+    """O Polars carregou antes do nini_datacomp, e o alocador dele não pôde ser configurado (mais memória no pico)."""

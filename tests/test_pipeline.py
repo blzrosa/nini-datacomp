@@ -67,6 +67,12 @@ def test_parquet_dataset(dataset: Path, window_rows: int | None, prefetch: bool)
         assert res.aligned_to_row_groups
 
 
+@pytest.mark.parametrize("engine", ["in-memory", "streaming"])
+def test_engine(dataset: Path, engine: Any) -> None:
+    res = count_rows(dataset / "left", dataset / "right", ["id"], window_rows=3_000, engine=engine)
+    _check(res, dataset)
+
+
 def test_memory_limit_makes_windows(dataset: Path) -> None:
     res = count_rows(dataset / "left", dataset / "right", ["id"], memory_limit="64MiB")
     _check(res, dataset)

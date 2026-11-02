@@ -71,3 +71,19 @@ Formato: [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/); versões: 
   só conta as linhas numa passada, lê a chave do começo de cada row group (Parquet em ordem) ou uma amostra de até 200
   mil chaves; a janela passa a contar 4 cópias vivas no pico (medido), não 2; e a base é o lado em ordem no disco
   (antes era sempre o maior, que no make_data tem os arquivos extra-* fora de ordem).
+- Medido no segundo (`memory_limit = 1GB`): pico de 1,3–1,6 GB em 10M linhas com a maior janela em ~200 MB. Para achar
+  de onde vem o resto: `engine` no `count_rows`/`WindowReader` (o engine do `collect` do Polars em cada janela) e
+  `tools/diag_memory.py`, que anota a memória etapa a etapa e janela a janela e roda variações que isolam uma causa
+  por vez (sem leitura em paralelo, menos threads, engine streaming, só a chave, janela menor, alocador devolvendo a
+  memória na hora, sem os kernels, sem o pool).
+- Diagnóstico: o resto do pico era memória que o alocador do Polars (mimalloc, no Windows) guarda depois de liberar e
+  vai acumulando janela após janela; janelas menores, sem leitura em paralelo, sem os kernels ou sem o pool quase não
+  mudavam o pico. Com `MIMALLOC_PURGE_DELAY=0`: 10M x 10 de 1159 para 605 MB, 10M x 50 de 1094 para 693 MB (e 5,6 →
+  4,2 s nesse caso).
+- `core/allocator.py`: o import do `nini_datacomp` define `MIMALLOC_PURGE_DELAY=0` quando o Polars ainda não foi
+  importado (sem sobrescrever um valor existente); quando já foi, avisa com `AllocatorWarning` (no Windows).
+  `NINI_DATACOMP_ALLOCATOR=0` desliga; `nini_datacomp.ALLOCATOR_STATUS` diz o que aconteceu. Os benchmarks medem com o
+  alocador configurado.
+- `count_rows` solta as tabelas de cada janela antes de pedir a próxima: a variável do laço segurava a janela k
+  enquanto o leitor entregava a k+1 e já lia a k+2 (três janelas vivas; ~200 MB a mais no pico em 10M linhas, a
+  diferença entre o bench_rows e o diag_memory).

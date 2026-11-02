@@ -6,6 +6,13 @@ comparação em kernels C++, que leem as colunas do Polars sem cópia (interface
 > **Em construção (fase 0).** Ainda não há `compare`: este repositório tem só a fundação (biblioteca C++, ABI,
 > memória, leitura de colunas). Para comparar tabelas hoje, use o datacompolars.
 
+## Memória
+
+Importe o `nini_datacomp` antes do Polars. No import, ele configura o alocador do Polars (`MIMALLOC_PURGE_DELAY=0`)
+para devolver na hora a memória que libera; sem isso, numa comparação grande no Windows o pico chega a ~1,9x (medido
+na fase 1c). Se o Polars já tiver sido importado, não dá mais para configurar e o pacote avisa com `AllocatorWarning`;
+dá para definir a variável antes de iniciar o Python, ou silenciar com `NINI_DATACOMP_ALLOCATOR=0`.
+
 ## Desenvolvimento
 
 Precisa de Python ≥ 3.10, [uv](https://docs.astral.sh/uv/), CMake ≥ 3.20 e um compilador C++17 (no Windows, o Visual
