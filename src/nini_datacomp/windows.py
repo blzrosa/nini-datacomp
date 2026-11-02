@@ -41,10 +41,14 @@ __all__ = ["MIN_MEMORY", "Plan", "Window", "parse_memory_limit", "plan_windows"]
 AUTO_FRACTION = 0.25  # "auto": 1/4 da memória livre...
 AUTO_CAP = 2 * 1024**3  # ... até 2 GiB
 MIN_MEMORY = 64 * 1024**2
-SAFETY = 0.8  # folga para o que a estimativa não vê (fragmentação, o próprio processo)
+SAFETY = 0.7  # folga para o que a estimativa não vê (o próprio processo, fragmentação); 0,8 passava do limite em
+# até 4% com IN_FLIGHT 3,5 (fase 2: 10M x 50 e contagem com chave de texto em 10M x 10)
 # Cópias de uma janela vivas no pico: a janela em uso, a seguinte sendo lida e as cópias temporárias que o Polars faz
-# ao decodificar e filtrar. Medido na fase 1c (docs/benchmarks/fase1.md): o pico ficou perto de 4x a maior janela.
-IN_FLIGHT = 4
+# ao decodificar e filtrar. Era 4 (medido na fase 1c, com o bug que deixava três janelas vivas e o alocador do Polars
+# guardando memória); na fase 2, com os dois corrigidos, o pico ficou em 1,9 a 2,9x a maior janela (+~200 MB do
+# processo), e o nini-datacomp usava ~2/3 do memory_limit: janelas menores que o necessário, e mais leituras. Com 3, a
+# contagem com chave de texto em 10M x 10 passou do limite (1.086 MB com memory_limit 1GB): 3,5.
+IN_FLIGHT = 3.5
 KERNEL_BYTES_PER_ROW = 32  # pares (8), hashes dos dois lados (16) e tabelas, por linha da janela
 SAMPLE_ROWS = 50_000  # linhas lidas para medir os bytes por linha
 SAMPLE_KEYS = 200_000  # chaves da amostra que define as fronteiras quando a fonte não está em ordem

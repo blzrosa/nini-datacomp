@@ -143,4 +143,26 @@ Formato: [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/); versões: 
   `RowCounts.column_groups`. O `verify_hash` confere célula a célula grupo a grupo e junta os pares diferentes.
 - `tools/check.py`: formatação, lint, tipos e testes em sequência, parando no primeiro que falhar; `--fix` e
   `--then <ferramenta>` (benchmarks no fim).
+- Benchmark global (dados novos, linha de base refeita): divergentes certos em tudo; todos os picos abaixo de 1 GB
+  (10M x 300: 588 MB em 3 grupos de colunas, 47,1 s, 0,94x o datacompolars); mas 1M x 50 (1,41x) e 10M x 50
+  (1,56x) mais lentos, com a leitura dominando e só ~2/3 do memory_limit em uso. Ajustes:
+  - `IN_FLIGHT` de 4 para 3 (o pico medido, já sem o bug das três janelas e com o alocador configurado, é de 1,9 a
+    2,9x a maior janela): janelas ~1/3 maiores, menos leituras.
+  - os dois lados de cada janela lidos ao mesmo tempo (`WindowReader(parallel_sides=True)`): uma leitura do Polars
+    de poucos row groups não ocupa todas as threads.
+- Resultado: 10M x 300 em 36,9 s (0,74x o datacompolars) e 917 MB; 10M x 50 de 6,7 para 5,4 s (1,27x); 1M x 50 quase
+  igual (1,37x). Mas a contagem com chave de texto em 10M x 10 passou do limite (1.086 MB): `IN_FLIGHT` = 3,5. Novas
+  etapas nos tempos: `setup` (abrir as fontes e alinhar os schemas) e `other` (o que nenhuma etapa mediu; em 10M x 50
+  eram ~1,6 s dos 5,4).
+- Com `IN_FLIGHT` = 3,5: 10M x 300 em 36,5 s (0,73x), 1M x 300 0,88x, 10M x 10 1,01x, 10M x 50 1,01x (inconclusivo),
+  1M x 50 1,31x (mais lento). O `other` era grande (10M x 300: 8,7 s; 10M x 50: 2,1 s): soltar a memória de cada
+  janela na thread principal, com o alocador devolvendo as páginas na hora. Agora as janelas são soltas numa thread
+  à parte (`_dispose`).
+- Os relatórios dão o pico em MiB (`MB` = 1.048.576 bytes) e o `memory_limit` "1GB" é 10^9 bytes = 954 MiB: alguns
+  picos passavam do limite por até ~3% (10M x 50: 959 MiB; contagem com chave de texto em 10M x 10: até 985 MiB).
+  O `bench_hash` ganhou a coluna `cabe` (o maior pico contra o limite).
+- Soltar as janelas noutra thread tirou o `other` (10M x 300: 8,7 → 2,6 s), mas o tempo total não mudou: o custo foi
+  para a leitura em paralelo (o gargalo agora é o processador, lendo). Fica, porque não atrapalha. Dois picos ainda
+  passavam do limite (10M x 50: 983 MiB; chave de texto em 10M x 10: 992 MiB; o limite de 1GB é 954 MiB):
+  `SAFETY` de 0,8 para 0,7 (janelas ~12% menores).
 

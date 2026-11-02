@@ -110,7 +110,7 @@ def _cell(values: list[float], digits: int) -> str:
 
 def _phases(runs: list[dict[str, Any]]) -> str:
     """Média de cada etapa (s): planejamento, espera pela leitura, alinhamento, hash, pares divergentes."""
-    names = ("plan", "read_wait", "read", "align", "hash", "diff", "verify")
+    names = ("setup", "plan", "read_wait", "read", "align", "hash", "diff", "verify", "other")
     parts = []
     for n in names:
         vals = [r["timings"].get(n) for r in runs if n in r["timings"]]
@@ -120,6 +120,9 @@ def _phases(runs: list[dict[str, Any]]) -> str:
 
 
 def report(results: dict[str, list[dict[str, Any]]], memory_limit: str) -> Path:
+    from nini_datacomp.windows import parse_memory_limit  # noqa: PLC0415
+
+    limit_mib = parse_memory_limit(memory_limit) / MB
     DOCS.mkdir(parents=True, exist_ok=True)
     (DOCS / "fase2.json").write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
     lines = [
@@ -130,15 +133,19 @@ def report(results: dict[str, list[dict[str, Any]]], memory_limit: str) -> Path:
         "(Welch, método delta); `ok` se o IC inteiro fica em até 1,10. Alocador do Polars configurado como no import",
         "do nini_datacomp (o datacompolars foi medido sem).",
         "",
-        "| caso | janelas | tempo (s) | pico (MB) | datacompolars: tempo | datacompolars: pico | razão (IC 95%) "
-        "| situação | contagens |",
-        "|---|---:|---:|---:|---:|---:|---:|:---:|:---:|",
+        f"Pico em MiB (1 MiB = 1.048.576 bytes); `cabe` = o maior pico das execuções até o memory_limit "
+        f"({limit_mib:,.0f} MiB).",
+        "",
+        "| caso | janelas | tempo (s) | pico (MiB) | cabe | datacompolars: tempo | datacompolars: pico "
+        "| razão (IC 95%) | situação | contagens |",
+        "|---|---:|---:|---:|:---:|---:|---:|---:|:---:|:---:|",
     ]
     detail = ["", "Etapas (média, s; `read_wait` = a leitura que não ficou escondida atrás da comparação):", ""]
     for case, runs in results.items():
         base = _baseline(case)
         seconds = [r["seconds"] for r in runs]
         ok = "✓" if all(r["ok"] for r in runs) else "✗"
+        fits = "✓" if max(r["peak_mb"] for r in runs) <= limit_mib else "✗"
         if base:
             ratio, lo, hi, status = compare(summarize(seconds), _stats(base["seconds"]))
             bt, bp = f"{base['seconds']['mean']:.3f}", f"{base['peak_mb']['mean']:.0f}"
@@ -147,7 +154,7 @@ def report(results: dict[str, list[dict[str, Any]]], memory_limit: str) -> Path:
             bt = bp = rcell = status = "—"
         lines.append(
             f"| {case} | {runs[-1]['windows']} | {_cell(seconds, 3)} | {_cell([r['peak_mb'] for r in runs], 0)} "
-            f"| {bt} | {bp} | {rcell} | {status} | {ok} |"
+            f"| {fits} | {bt} | {bp} | {rcell} | {status} | {ok} |"
         )
         pieces = runs[-1].get("pieces", 0) / max(1, 2 * runs[-1]["windows"] * runs[-1].get("groups", 1))
         groups = runs[-1].get("groups", 1)

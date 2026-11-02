@@ -12,6 +12,7 @@ faz com o ``memory_limit``.
 
 from __future__ import annotations
 
+import threading
 import time
 from collections import defaultdict
 from collections.abc import Iterator, Sequence
@@ -95,7 +96,8 @@ class WindowReader:
     ``columns_left``/``columns_right``: as colunas lidas (a chave sempre entra). ``groups``: em vez delas, grupos de
     colunas (as mesmas nos dois lados), cada um lido numa passada com a chave: `pieces` entrega cada janela grupo a
     grupo, e só um grupo (mais o seguinte, sendo lido) fica em memória. ``prefetch=False`` lê uma parte por vez (menos
-    memória, sem sobrepor leitura e comparação). ``engine``: o engine do ``collect`` do Polars.
+    memória, sem sobrepor leitura e comparação). ``parallel_sides=False`` lê a direita depois da esquerda, em vez de
+    ao mesmo tempo. ``engine``: o engine do ``collect`` do Polars.
     """
 
     def __init__(
@@ -110,9 +112,11 @@ class WindowReader:
         columns_right: Sequence[str] | None = None,
         groups: Sequence[Sequence[str]] | None = None,
         prefetch: bool = True,
+        parallel_sides: bool = True,
         engine: Engine = "auto",
     ) -> None:
         self.left, self.right, self.plan = left, right, plan
+        self.parallel_sides = parallel_sides
         self.keys, self.dtypes = list(keys), list(dtypes)
         if groups is None:
             self.groups: list[tuple[list[str] | None, list[str] | None]] = [
@@ -149,8 +153,15 @@ class WindowReader:
         t = time.perf_counter()
         files_l, files_r = self.plan.files_for(window.index)
         cols_l, cols_r = self.groups[g]
-        lf = self._read_side(self.left, window, cols_l, files_l)
-        rf = self._read_side(self.right, window, cols_r, files_r)
+        if self.parallel_sides and self.left.frame is None:
+            # os dois lados ao mesmo tempo: cada leitura do Polars de uma janela pequena (poucos row groups) não ocupa
+            # todas as threads, e as duas juntas, sim (a memória é a mesma: os dois lados são lidos de qualquer jeito)
+            right = _side_pool().submit(self._read_side, self.right, window, cols_r, files_r)
+            lf = self._read_side(self.left, window, cols_l, files_l)
+            rf = right.result()
+        else:
+            lf = self._read_side(self.left, window, cols_l, files_l)
+            rf = self._read_side(self.right, window, cols_r, files_r)
         return window, g, lf, rf, time.perf_counter() - t
 
     def pieces(self) -> Iterator[tuple[Window, int, pl.DataFrame, pl.DataFrame]]:
@@ -162,6 +173,7 @@ class WindowReader:
                 self.timer.seconds["read"] += spent
                 self._track(lf, rf)
                 yield w, g, lf, rf
+                _dispose(lf, rf)  # a última referência: a memória é solta noutra thread
                 del lf, rf
             return
         with ThreadPoolExecutor(max_workers=1, thread_name_prefix="nini-datacomp-read") as pool:
@@ -178,6 +190,7 @@ class WindowReader:
                 pending = pool.submit(self._read, tasks[i + 1]) if i + 1 < len(tasks) else None
                 self._track(lf, rf)
                 yield w, g, lf, rf
+                _dispose(lf, rf)  # a última referência: a memória é solta noutra thread
                 del lf, rf
 
     def __iter__(self) -> Iterator[tuple[Window, pl.DataFrame, pl.DataFrame]]:
@@ -189,6 +202,38 @@ class WindowReader:
 
     def _track(self, lf: pl.DataFrame, rf: pl.DataFrame) -> None:
         self.window_bytes = max(self.window_bytes, int(lf.estimated_size() + rf.estimated_size()))
+
+
+_side_executor: ThreadPoolExecutor | None = None
+_side_lock = threading.Lock()
+
+
+def _side_pool() -> ThreadPoolExecutor:
+    """As threads que leem o lado direito enquanto a do leitor lê o esquerdo (reaproveitadas entre comparações)."""
+    global _side_executor  # noqa: PLW0603
+    with _side_lock:
+        if _side_executor is None:
+            _side_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="nini-datacomp-side")
+        return _side_executor
+
+
+_dispose_executor: ThreadPoolExecutor | None = None
+
+
+def _dispose(*frames: pl.DataFrame) -> None:
+    """Solta ``frames`` numa thread à parte. Com o alocador do Polars devolvendo a memória na hora (core/allocator.py),
+    liberar uma janela custa: devolver as páginas ao sistema. Medido na fase 2: até ~1/4 do tempo de uma comparação,
+    na thread principal, sem estar em nenhuma etapa. Assim, a comparação da janela seguinte não espera por isso."""
+    global _dispose_executor  # noqa: PLW0603
+    with _side_lock:
+        if _dispose_executor is None:
+            _dispose_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="nini-datacomp-free")
+        pool = _dispose_executor
+    pool.submit(_drop, frames)
+
+
+def _drop(frames: tuple[pl.DataFrame, ...]) -> None:
+    del frames
 
 
 def _with_keys(columns: Sequence[str] | None, keys: Sequence[str]) -> list[str] | None:
@@ -374,6 +419,7 @@ def _run(
         read = list(columns)
     ls, rs, dtypes = prepare_keys(ls, rs, keys)
     t = time.perf_counter()
+    setup_s = t - t0  # abrir as fontes, alinhar os schemas, as conversões de tipo
     plan = plan_windows(ls, rs, keys, memory_limit, window_rows=window_rows)
     plan_s = time.perf_counter() - t
 
@@ -408,7 +454,12 @@ def _run(
         # continua viva pela variável do laço (três partes em memória, não duas; medido: ~+200 MB em 10M linhas)
         del lf, rf
 
-    timings = {"plan": plan_s, **spent, **reader.timer.seconds, "total": time.perf_counter() - t0}
+    timings = {"setup": setup_s, "plan": plan_s, **spent, **reader.timer.seconds}
+    total = time.perf_counter() - t0
+    # o que nenhuma etapa mediu (laço, Python, a leitura em paralelo disputando o processador); "read_background" não
+    # entra na conta: corre em paralelo com as outras
+    measured = sum(v for k, v in timings.items() if k != "read_background")
+    timings |= {"other": max(0.0, total - measured), "total": total}
     aborted = bool(totals["dup_left"] or totals["dup_right"])
     return RowCounts(
         left_total=totals["left"],
