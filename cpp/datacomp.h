@@ -5,7 +5,7 @@
 #pragma once
 #include <stdint.h>
 
-#define DC_ABI_VERSION 2
+#define DC_ABI_VERSION 3
 
 // DC_API: exportada ao compilar a biblioteca (DC_BUILDING), importada ao usá-la de outro código C/C++
 #if defined(_WIN32)
@@ -35,6 +35,9 @@ DC_API void dc_pool_free(int64_t addr);
 DC_API int64_t dc_pool_limit(int64_t bytes);
 DC_API void dc_pool_trim();
 DC_API void dc_pool_stats(int64_t* out);
+
+/* parquet_meta.cpp */
+DC_API int64_t dc_parquet_row_groups(const uint8_t* footer, int64_t n, int64_t* rows, int64_t cap);
 
 #ifdef __cplusplus
 }

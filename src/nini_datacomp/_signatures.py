@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from ctypes import c_double, c_float, c_int, c_int64, c_uint8, c_uint16, c_uint32, c_uint64, c_void_p
 
-ABI_VERSION = 2
+ABI_VERSION = 3
 
 # nome: (tipo de retorno, [tipos dos argumentos])
 SIGNATURES = {
@@ -15,6 +15,7 @@ SIGNATURES = {
     "dc_pool_limit": (c_int64, [c_int64]),
     "dc_pool_trim": (None, []),
     "dc_pool_stats": (None, [c_void_p]),
+    "dc_parquet_row_groups": (c_int64, [c_void_p, c_int64, c_void_p, c_int64]),
 }
 
 __all__ = ['ABI_VERSION', 'SIGNATURES', 'c_double', 'c_float', 'c_int', 'c_int64', 'c_uint8', 'c_uint16', 'c_uint32', 'c_uint64', 'c_void_p']
