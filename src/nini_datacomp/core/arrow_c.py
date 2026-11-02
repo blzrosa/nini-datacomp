@@ -240,10 +240,11 @@ def export_array(fmt: bytes, length: int, buffers: Sequence[Any], null_count: in
 class Imported:
     """Um array importado de um stream do Arrow (um pedaço só), dono dos buffers enquanto existir."""
 
-    __slots__ = ("array", "format", "stream")
+    __slots__ = ("array", "dictionary", "format", "stream")
 
-    def __init__(self, fmt: bytes, array: ArrowArray, stream: ArrowArrayStream) -> None:
+    def __init__(self, fmt: bytes, array: ArrowArray, stream: ArrowArrayStream, dictionary: bool = False) -> None:
         self.format = fmt
+        self.dictionary = dictionary  # codificado por dicionário (Categorical, Enum): os buffers são códigos
         self.array = array
         self.stream = stream
 
@@ -278,14 +279,16 @@ def _take_stream(s: Any) -> ArrowArrayStream | None:
     return stream
 
 
-def _format_of(stream: ArrowArrayStream) -> bytes | None:
+def _format_of(stream: ArrowArrayStream) -> tuple[bytes, bool] | None:
+    """(formato, se é codificado por dicionário) da coluna do stream."""
     schema = ArrowSchema()
     if stream.get_schema(ctypes.byref(stream), ctypes.byref(schema)) != 0:
         return None
     fmt = bytes(schema.format or b"")
+    dictionary = bool(schema.dictionary)
     if schema.release:
         schema.release(ctypes.byref(schema))
-    return fmt
+    return fmt, dictionary
 
 
 def import_series(s: Any) -> Imported | None:
@@ -294,12 +297,12 @@ def import_series(s: Any) -> Imported | None:
     stream = _take_stream(s)
     if stream is None:
         return None
-    fmt = _format_of(stream)
+    info = _format_of(stream)
     first = ArrowArray()
-    if fmt is None or stream.get_next(ctypes.byref(stream), ctypes.byref(first)) != 0 or not first.release:
+    if info is None or stream.get_next(ctypes.byref(stream), ctypes.byref(first)) != 0 or not first.release:
         stream.release(ctypes.byref(stream))
         return None
-    out = Imported(fmt, first, stream)  # daqui em diante, o __del__ dele libera
+    out = Imported(info[0], first, stream, info[1])  # daqui em diante, o __del__ dele libera
     extra = ArrowArray()
     if stream.get_next(ctypes.byref(stream), ctypes.byref(extra)) != 0:
         return None

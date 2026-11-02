@@ -5,7 +5,7 @@
 #pragma once
 #include <stdint.h>
 
-#define DC_ABI_VERSION 1
+#define DC_ABI_VERSION 2
 
 // DC_API: exportada ao compilar a biblioteca (DC_BUILDING), importada ao usá-la de outro código C/C++
 #if defined(_WIN32)
@@ -25,6 +25,9 @@ extern "C" {
 /* abi.cpp */
 DC_API int dc_abi_version();
 DC_API int64_t dc_count_unset(const uint8_t* bits, int64_t offset, int64_t m);
+
+/* keys.cpp */
+DC_API int dc_align_keys(int k, const int64_t* left, int64_t nl, const int64_t* right, int64_t nr, int strategy, uint32_t* li, uint32_t* ri, int64_t* out);
 
 /* memory.cpp */
 DC_API int64_t dc_pool_alloc(int64_t nbytes);

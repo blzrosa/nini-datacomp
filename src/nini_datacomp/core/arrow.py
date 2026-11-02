@@ -112,6 +112,8 @@ def _single_chunk(s: pl.Series) -> Imported:
     def candidates() -> Iterator[pl.Series]:  # preguiçoso: rechunk e to_physical só quando precisa
         yield s
         yield s.rechunk()
+        if not (s.dtype.is_temporal() or s.dtype == pl.Decimal):  # nunca os códigos de um Categorical/Enum
+            return
         physical = s.to_physical()
         if physical.dtype != s.dtype:
             yield physical
@@ -130,6 +132,10 @@ def _single_chunk(s: pl.Series) -> Imported:
 def import_column(s: pl.Series) -> Column:
     """Os buffers de ``s``, sem cópia. Levanta `UnsupportedTypeError` para tipos fora da lista da 0.1."""
     imp = _single_chunk(s)
+    if imp.dictionary:  # os buffers seriam códigos, e o mesmo texto tem códigos diferentes em cada tabela
+        raise UnsupportedTypeError(
+            f"coluna {s.name!r} ({s.dtype}) é codificada por dicionário: converta para String antes (cast(pl.String))"
+        )
     fmt, arr = imp.format, imp.array
     off, m, nb = int(arr.offset), int(arr.length), int(arr.n_buffers)
     validity = imp.buffer(0) if nb else None
