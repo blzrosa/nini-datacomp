@@ -143,10 +143,10 @@ def timed(fn: Callable[[], object], runs: int) -> Stats:
 
 
 def measure(rows: int, cols: int, runs: int) -> dict[str, Any]:
-    spec = Spec(rows, cols)
+    spec = Spec(rows, cols, row_group_size=100_000)  # o experimento da fase 0c foi feito com row groups de 100 mil
     root = generate(spec, DATA)
     raw = raw_copy(root)
-    plan = windows(rows, cols, spec.row_group_size)
+    plan = windows(rows, cols, spec.row_group_size or 100_000)
     ranges = [byte_ranges(root / side, lo, hi) for lo, hi in plan for side in SIDES]
 
     def every_window(read: Callable[[Path, int, int], int], base: Path) -> Callable[[], int]:

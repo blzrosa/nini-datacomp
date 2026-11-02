@@ -9,7 +9,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from nini_datacomp.io import open_source
+from nini_datacomp.io import open_source, row_groups
 from nini_datacomp.windows import MIN_MEMORY, Plan, Window, parse_memory_limit, plan_windows
 
 
@@ -147,3 +147,51 @@ def test_describe_and_errors() -> None:
         plan_windows(open_source(df), open_source(df), ["id"], window_rows=0)
     with pytest.raises(ValueError, match="ao menos uma"):
         plan_windows(open_source(df), open_source(df), [])
+
+
+def test_window_is_never_smaller_than_a_row_group(tmp_path: Path) -> None:
+    """Linhas largas e memory_limit pequeno pedem janelas menores que um row group: cada janela leva um row group
+    inteiro (o Polars o decodifica de qualquer jeito), alinhada, e a memória cabe lendo as colunas em grupos."""
+    n, rg = 20_000, 5_000
+    df = pl.DataFrame({"id": range(n), **{f"s{j}": [f"{i:06d}" + "x" * 500 for i in range(n)] for j in range(4)}})
+    df.write_parquet(tmp_path / "x.parquet", row_group_size=rg)
+    groups = row_groups(tmp_path / "x.parquet")  # o Polars 1.30 nem sempre corta no tamanho pedido
+    if len(groups) < 2 or len(set(groups[:-1])) != 1:
+        pytest.skip(f"row groups de tamanhos {groups} no Polars {pl.__version__}")
+    plan = plan_windows(open_source(tmp_path), open_source(tmp_path), ["id"], memory_limit=MIN_MEMORY)
+    assert plan.rows_per_window == max(groups)
+    assert plan.aligned_to_row_groups
+    assert len(plan.windows) == len(groups)
+    assert plan.column_groups >= 2
+    assert any("grupos de colunas" in note for note in plan.notes)
+    assert set(plan.column_bytes) == {"s0", "s1", "s2", "s3"}  # sem a chave
+    split = plan.split_columns(["s0", "s1", "s2", "s3"])
+    assert [c for g in split for c in g] == ["s0", "s1", "s2", "s3"]  # grupos seguidos, na ordem
+    assert len(split) == min(plan.column_groups, 4)
+    assert_partition(plan, df, ["id"])
+    fixed = plan_windows(open_source(tmp_path), open_source(tmp_path), ["id"], window_rows=1_000)
+    assert (fixed.rows_per_window, fixed.column_groups) == (1_000, 1)  # window_rows explícito não é corrigido
+
+
+def test_each_window_reads_only_its_files(tmp_path: Path) -> None:
+    """Com vários arquivos, cada janela lê só os que encostam na sua faixa de chaves (o Polars não abre o rodapé de
+    todos a cada janela), e nenhuma linha fica de fora."""
+    n = 20_000
+    df = pl.DataFrame({"id": range(n), "v": [i % 13 for i in range(n)]})
+    for part in range(8):
+        df.slice(part * 2_500, 2_500).write_parquet(tmp_path / f"part-{part:05d}.parquet", row_group_size=500)
+    src = open_source(tmp_path)
+    plan = plan_windows(src, src, ["id"], window_rows=2_000)
+    left, right = plan.files
+    assert left is not None
+    assert right == left
+    assert len(left) == len(plan.windows)
+    assert all(0 < len(files) <= 2 for files in left)  # uma janela de 2.000 linhas cai em até 2 arquivos de 2.500
+    dtypes = [df.schema["id"]]
+    for w, files in zip(plan.windows, left, strict=True):
+        pred = w.predicate(["id"], dtypes)
+        want = df.height if pred is None else df.filter(pred).height
+        got = src.scan([src.files[i] for i in files])
+        assert (got.collect() if pred is None else got.filter(pred).collect()).height == want
+    single = plan_windows(open_source(df), open_source(df), ["id"], window_rows=2_000)
+    assert single.files == (None, None)  # DataFrame: não há arquivos

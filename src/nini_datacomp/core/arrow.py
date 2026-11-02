@@ -28,9 +28,9 @@ import polars as pl
 
 from .._native import lib
 from ..errors import UnsupportedTypeError
-from .arrow_c import Imported, import_series
+from .arrow_c import Imported, ImportedBatch, import_batch, import_series
 
-__all__ = ["Column", "import_column", "value_width"]
+__all__ = ["Column", "FrameColumns", "import_column", "import_frame", "value_width"]
 
 # largura em bytes dos tipos de largura fixa, pelo formato da interface C do Arrow
 _FIXED = {
@@ -110,7 +110,8 @@ def _single_chunk(s: pl.Series) -> Imported:
     # Duration, Time, Decimal) pelo stream; aí vai a representação física (dias, microssegundos...), que é a mesma
     # memória e é o que os kernels leem de qualquer jeito.
     def candidates() -> Iterator[pl.Series]:  # preguiçoso: rechunk e to_physical só quando precisa
-        yield s
+        if s.n_chunks() == 1:  # vários pedaços nunca saem num array só: nem tenta (a exportação custa)
+            yield s
         yield s.rechunk()
         if not (s.dtype.is_temporal() or s.dtype == pl.Decimal):  # nunca os códigos de um Categorical/Enum
             return
@@ -168,3 +169,37 @@ def import_column(s: pl.Series) -> Column:
     values = imp.buffer(1)
     data = None if values is None else values + width * off
     return Column(s.name, s.dtype, fmt, m, null_count, off, validity, data, width, (), (), imp)
+
+
+_DESC = 6  # inteiros por coluna no descritor dos kernels (cpp/columns.hpp)
+
+
+@dataclass(frozen=True)
+class FrameColumns:
+    """Todas as colunas de um DataFrame lidas de uma vez, já como descritores dos kernels (``k x 6`` int64)."""
+
+    names: tuple[str, ...]
+    length: int
+    desc: np.ndarray
+    owner: ImportedBatch  # mantém os buffers vivos
+
+    def __len__(self) -> int:
+        return len(self.names)
+
+
+def import_frame(df: pl.DataFrame) -> FrameColumns | None:
+    """As colunas de ``df`` sem cópia, numa exportação só do Polars e uma chamada ao C++ (``dc_describe_batch``), em
+    vez de uma `import_column` por coluna (~0,3 ms cada: numa janela de 300 colunas, mais que o próprio hash).
+
+    None quando não dá (o DataFrame em vários pedaços de memória, um tipo que o Polars não exporta assim, um
+    Categorical): quem chama cai na leitura coluna a coluna, que trata esses casos.
+    """
+    if df.width == 0 or any(isinstance(t, (pl.Categorical, pl.Enum)) for t in df.dtypes):
+        return None
+    batch = import_batch(df)
+    if batch is None or int(batch.array.length) != df.height:
+        return None
+    desc = np.zeros((df.width, _DESC), np.int64)
+    if lib().dc_describe_batch(batch.schema_address, batch.array_address, df.width, desc.ctypes.data) != 0:
+        return None
+    return FrameColumns(tuple(df.columns), df.height, desc, batch)

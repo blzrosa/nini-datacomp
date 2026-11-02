@@ -181,6 +181,37 @@ class Plan:
     base: str  # o lado de onde saíram as fronteiras ("left" ou "right")
     aligned_to_row_groups: bool = False
     notes: list[str] = field(default_factory=list)
+    # por lado (esquerda, direita): para cada janela, os índices (em Source.files) dos arquivos Parquet cuja faixa de
+    # chaves encosta nela; None = ler a fonte inteira (não é Parquet, ou um arquivo só)
+    files: tuple[list[tuple[int, ...]] | None, list[tuple[int, ...]] | None] = (None, None)
+    column_groups: int = 1  # em quantos grupos de colunas ler cada janela (1 = todas de uma vez)
+    column_bytes: dict[str, float] = field(default_factory=dict)  # bytes por linha de cada coluna, os dois lados
+
+    def split_columns(self, columns: Sequence[str]) -> list[list[str]]:
+        """``columns`` em até `column_groups` grupos seguidos (na mesma ordem), de tamanhos parecidos em bytes."""
+        groups = max(1, min(self.column_groups, len(columns)))
+        if groups == 1:
+            return [list(columns)]
+        sizes = [self.column_bytes.get(c, 0.0) or 1.0 for c in columns]
+        target = sum(sizes) / groups
+        out: list[list[str]] = [[]]
+        acc = 0.0
+        for i, (c, size) in enumerate(zip(columns, sizes, strict=True)):
+            # novo grupo quando este passa da sua parte dos bytes, ou quando as colunas que faltam só dão para um
+            # grupo cada (assim saem exatamente `groups` grupos)
+            if (
+                out[-1]
+                and len(out) < groups
+                and (acc + size / 2 > target * len(out) or len(columns) - i == groups - len(out))
+            ):
+                out.append([])
+            out[-1].append(c)
+            acc += size
+        return out
+
+    def files_for(self, index: int) -> tuple[tuple[int, ...] | None, tuple[int, ...] | None]:
+        left, right = self.files
+        return (None if left is None else left[index], None if right is None else right[index])
 
 
 def _key_lazy(source: Source, keys: Sequence[str]) -> pl.LazyFrame:
@@ -206,10 +237,13 @@ def _rows_at(kl: pl.LazyFrame, keep: pl.Expr) -> pl.DataFrame:
     return out.sort("__i")
 
 
-def _bytes_per_row(source: Source, sample_rows: int) -> float:
-    """Bytes por linha na memória (todas as colunas), por uma amostra do começo da fonte."""
+def _bytes_per_row(source: Source, sample_rows: int) -> tuple[float, dict[str, float]]:
+    """Bytes por linha na memória (todas as colunas, e de cada coluna), por uma amostra do começo da fonte."""
     frame = source.frame if source.frame is not None else source.lazy.head(sample_rows).collect()
-    return frame.estimated_size() / frame.height if frame.height else 0.0
+    if not frame.height:
+        return 0.0, {}
+    per_column = {c: frame[c].estimated_size() / frame.height for c in frame.columns}
+    return frame.estimated_size() / frame.height, per_column
 
 
 def _row_group_starts(source: Source) -> list[int]:
@@ -220,6 +254,11 @@ def _row_group_starts(source: Source) -> list[int]:
             starts.append(pos)
             pos += n
     return starts
+
+
+def _largest_row_group(*sources: Source) -> int:
+    """O maior row group dos Parquet entre ``sources`` (0 se nenhum é Parquet)."""
+    return max((n for src in sources for path in src.files for n in row_groups(path)), default=0)
 
 
 def _snap(cuts: list[int], starts: list[int], rows_per_window: int) -> list[int] | None:
@@ -268,6 +307,69 @@ def _sampled_bounds(kl: pl.LazyFrame, keys: Sequence[str], n: int, rows_per_wind
     return [tuple(row) for row in sample[[p for p in positions if p < sample.height]].iter_rows()]
 
 
+def _window_size(
+    left: Source, right: Source, bpr: tuple[float, float], budget: int, *, window_rows: int | None, columns: int
+) -> tuple[int, int, list[str]]:
+    """Linhas por janela (pelo orçamento, ou ``window_rows``), em quantos grupos de colunas ler cada janela, e as
+    notas do plano sobre isso."""
+    if window_rows is not None:
+        if window_rows < 1:
+            raise ValueError("window_rows deve ser >= 1")
+        return window_rows, 1, []
+    per_row = IN_FLIGHT * (bpr[0] + bpr[1]) + 2 * KERNEL_BYTES_PER_ROW
+    rows_per_window = max(1, int(budget * SAFETY / per_row))
+    floor = _largest_row_group(left, right)
+    if rows_per_window >= floor:
+        return rows_per_window, 1, []
+    # O Polars decodifica o row group inteiro mesmo para uma parte dele: janelas menores que um row group só repetem
+    # o trabalho (medido na fase 2: 10M x 300 com janelas de ~52 mil linhas e row groups de 100 mil, cada um lido duas
+    # vezes). Então a janela fica com um row group, e a memória cabe lendo as colunas em grupos (o hash de linha
+    # continua de um grupo para o outro: mesmo resultado).
+    groups = -(-floor // rows_per_window)
+    notes = [
+        f"o memory_limit pede janelas de {rows_per_window:,} linhas, menos que um row group ({floor:,}): cada janela "
+        f"leva um row group, lido em {min(groups, max(columns, 1))} grupos de colunas"
+    ]
+    if groups > columns:
+        notes.append("nem uma coluna por vez cabe no memory_limit: o pico vai passar dele")
+    return floor, max(1, min(groups, columns)), notes
+
+
+FileRange = tuple[Any, Any, bool]  # (menor e maior valor da 1ª coluna da chave, se tem chave nula) de um arquivo
+
+
+def _file_ranges(source: Source, keys: Sequence[str]) -> list[FileRange] | None:
+    """A faixa da 1ª coluna da chave em cada arquivo Parquet da fonte (uma passada só pela chave), ou None se a fonte
+    não tem vários arquivos."""
+    if len(source.files) < 2:
+        return None
+    schema = source.lazy.collect_schema()
+    first = pl.col(keys[0])
+    if isinstance(schema[keys[0]], (pl.Categorical, pl.Enum)):
+        first = first.cast(pl.String)
+    aggs = [first.min().alias("lo"), first.max().alias("hi"), _any_null(keys).any().alias("nulls")]
+    frames = pl.collect_all([source.scan([f]).select(aggs) for f in source.files])
+    return [(df["lo"][0], df["hi"][0], bool(df["nulls"][0])) for df in frames]
+
+
+def _touches(r: FileRange, w: Window) -> bool:
+    """O arquivo pode ter linhas da janela? (Só pela 1ª coluna da chave: conservador, nunca deixa uma de fora.)"""
+    lo, hi, nulls = r
+    if w.with_nulls and nulls:
+        return True
+    if lo is None:  # só chaves nulas
+        return False
+    if w.lo is not None and hi < w.lo[0]:
+        return False
+    return not (w.hi is not None and lo > w.hi[0])
+
+
+def _window_files(ranges: list[FileRange] | None, windows: list[Window]) -> list[tuple[int, ...]] | None:
+    if ranges is None:
+        return None
+    return [tuple(i for i, r in enumerate(ranges) if _touches(r, w)) for w in windows]
+
+
 def plan_windows(
     left: Source,
     right: Source,
@@ -287,16 +389,15 @@ def plan_windows(
     budget = parse_memory_limit(memory_limit)
     kl, kr = _key_lazy(left, keys), _key_lazy(right, keys)
     (nl, null_l), (nr, null_r) = _stats(kl, keys), _stats(kr, keys)
-    bpr = (_bytes_per_row(left, sample_rows), _bytes_per_row(right, sample_rows))
-    if window_rows is not None:
-        if window_rows < 1:
-            raise ValueError("window_rows deve ser >= 1")
-        rows_per_window = window_rows
-    else:
-        per_row = IN_FLIGHT * (bpr[0] + bpr[1]) + 2 * KERNEL_BYTES_PER_ROW
-        rows_per_window = max(1, int(budget * SAFETY / per_row))
+    (bl, cl), (br, cr) = _bytes_per_row(left, sample_rows), _bytes_per_row(right, sample_rows)
+    bpr = (bl, br)
+    column_bytes = {c: cl.get(c, 0.0) + cr.get(c, 0.0) for c in {*cl, *cr} if c not in keys}
+    rows_per_window, groups, notes = _window_size(
+        left, right, bpr, budget, window_rows=window_rows, columns=len(column_bytes)
+    )
     rows = (nl, nr)
-    single = Plan([Window(0, with_nulls=True)], rows_per_window, budget, bpr, rows, "left")
+    extra = {"column_groups": groups, "column_bytes": column_bytes}
+    single = Plan([Window(0, with_nulls=True)], rows_per_window, budget, bpr, rows, "left", notes=notes, **extra)
     if max(rows) <= rows_per_window:
         return single
 
@@ -324,5 +425,7 @@ def plan_windows(
     windows = [Window(0, None, unique[0], with_nulls=null_l or null_r)]
     windows += [Window(i + 1, unique[i], unique[i + 1]) for i in range(len(unique) - 1)]
     windows.append(Window(len(unique), unique[-1], None))
-    notes = [] if aligned else ["fronteiras por amostra das chaves (fora do começo dos row groups)"]
-    return Plan(windows, rows_per_window, budget, bpr, rows, base_name, aligned, notes)
+    if not aligned:
+        notes.append("fronteiras por amostra das chaves (fora do começo dos row groups)")
+    files = (_window_files(_file_ranges(left, keys), windows), _window_files(_file_ranges(right, keys), windows))
+    return Plan(windows, rows_per_window, budget, bpr, rows, base_name, aligned, notes, files, **extra)

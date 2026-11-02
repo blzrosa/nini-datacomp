@@ -5,7 +5,7 @@
 #pragma once
 #include <stdint.h>
 
-#define DC_ABI_VERSION 3
+#define DC_ABI_VERSION 5
 
 // DC_API: exportada ao compilar a biblioteca (DC_BUILDING), importada ao usá-la de outro código C/C++
 #if defined(_WIN32)
@@ -26,6 +26,9 @@ extern "C" {
 DC_API int dc_abi_version();
 DC_API int64_t dc_count_unset(const uint8_t* bits, int64_t offset, int64_t m);
 
+/* batch.cpp */
+DC_API int dc_describe_batch(const uint8_t* schema, const uint8_t* array, int k, int64_t* desc);
+
 /* keys.cpp */
 DC_API int dc_align_keys(int k, const int64_t* left, int64_t nl, const int64_t* right, int64_t nr, int strategy, uint32_t* li, uint32_t* ri, int64_t* out);
 
@@ -38,6 +41,10 @@ DC_API void dc_pool_stats(int64_t* out);
 
 /* parquet_meta.cpp */
 DC_API int64_t dc_parquet_row_groups(const uint8_t* footer, int64_t n, int64_t* rows, int64_t cap);
+
+/* rowhash.cpp */
+DC_API int dc_row_hash(int k, const int64_t* desc, int64_t start, int64_t end, int first, uint64_t* out);
+DC_API int64_t dc_diff_pairs(int k, const int64_t* left, const int64_t* right, const uint64_t* hl, const uint64_t* hr, const uint32_t* li, const uint32_t* ri, int64_t start, int64_t end, int verify, uint32_t* diff, int64_t* stats);
 
 #ifdef __cplusplus
 }

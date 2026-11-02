@@ -22,7 +22,7 @@ from .._native import lib, ptr
 from .arrow import Column
 from .memory import empty
 
-__all__ = ["Alignment", "Strategy", "align_keys", "key_kind"]
+__all__ = ["Alignment", "Strategy", "align_keys", "descriptor", "key_kind"]
 
 Strategy = Literal["auto", "merge", "hash"]
 _STRATEGIES = {"auto": 0, "merge": 1, "hash": 2}
@@ -68,7 +68,7 @@ class Alignment:
         return bool(self.dup_left or self.dup_right)
 
 
-def _descriptor(cols: Sequence[Column]) -> tuple[np.ndarray, list[np.ndarray]]:
+def descriptor(cols: Sequence[Column]) -> tuple[np.ndarray, list[np.ndarray]]:
     """Os descritores das colunas (``k x 6`` int64) e os vetores de endereços de texto, que têm de ficar vivos."""
     desc = np.zeros((len(cols), _DESC), np.int64)
     keep: list[np.ndarray] = []
@@ -101,8 +101,8 @@ def align_keys(left: Sequence[Column], right: Sequence[Column], strategy: Strate
     if max(nl, nr) > MAX_ROWS:
         raise ValueError(f"janela grande demais: {max(nl, nr):,} linhas (máximo {MAX_ROWS:,})")
 
-    ldesc, lkeep = _descriptor(left)
-    rdesc, rkeep = _descriptor(right)
+    ldesc, lkeep = descriptor(left)
+    rdesc, rkeep = descriptor(right)
     cap = max(min(nl, nr), 1)
     li, ri = empty(cap, np.uint32), empty(cap, np.uint32)
     out = np.zeros(_N_STATS, np.int64)

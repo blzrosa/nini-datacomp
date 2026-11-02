@@ -23,8 +23,10 @@ def test_column_names_skip_the_key() -> None:
 def test_spec_validation_and_files() -> None:
     with pytest.raises(ValueError, match="divergence"):
         Spec(10, 3, divergence=1.5)
-    assert Spec(10_000_000, 300).rows_per_file == 100_000  # 300 colunas: um row group por arquivo
-    assert Spec(10_000_000, 10).rows_per_file % 100_000 == 0
+    assert Spec(10_000_000, 300).rows_per_file == make_data.CELLS_PER_FILE // 301  # row group do Polars
+    assert Spec(10_000_000, 10, row_group_size=100_000).rows_per_file % 100_000 == 0
+    assert Spec(10, 3).label == "10x3"
+    assert Spec(10, 3, row_group_size=500).label == "10x3_rg500"  # outro row group, outra pasta
     assert Spec(10, 3, tag="x").label == "10x3_x"
 
 

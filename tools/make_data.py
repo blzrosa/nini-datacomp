@@ -36,7 +36,7 @@ import numpy as np
 import polars as pl
 
 KEY = "id"
-CELLS_PER_FILE = 30_000_000  # células (linhas x colunas) por arquivo: limita a memória da geração
+CELLS_PER_FILE = 100_000_000  # células (linhas x colunas) por arquivo: limita a memória da geração
 
 # tipos das colunas, em ciclo: 20% inteiros, 20% reais, 30% texto, 10% booleano, 10% data, 10% data e hora
 KINDS: tuple[tuple[str, dict[str, Any]], ...] = (
@@ -71,7 +71,7 @@ class Spec:
     only_left: float = 0.005  # fração das linhas da esquerda que não vão para a direita
     only_right: float = 0.005  # linhas extras só na direita (fração das linhas da esquerda)
     seed: int = 42
-    row_group_size: int = 100_000
+    row_group_size: int | None = None  # None: o padrão do Polars (o que um arquivo de verdade costuma ter)
     tag: str = ""
 
     def __post_init__(self) -> None:
@@ -84,13 +84,15 @@ class Spec:
 
     @property
     def label(self) -> str:
-        return f"{self.rows}x{self.cols}" + (f"_{self.tag}" if self.tag else "")
+        rg = f"_rg{self.row_group_size}" if self.row_group_size else ""
+        return f"{self.rows}x{self.cols}{rg}" + (f"_{self.tag}" if self.tag else "")
 
     @property
     def rows_per_file(self) -> int:
-        """Múltiplo do row group, com ~CELLS_PER_FILE células (pelo menos um row group)."""
+        """~CELLS_PER_FILE células por arquivo; com row group fixo, um múltiplo dele (pelo menos um row group)."""
+        rows = max(1, CELLS_PER_FILE // (self.cols + 1))
         rg = self.row_group_size
-        return max(rg, CELLS_PER_FILE // (self.cols + 1) // rg * rg)
+        return rows if rg is None else max(rg, rows // rg * rg)
 
 
 @dataclass

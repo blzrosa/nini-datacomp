@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CPP = ROOT / "cpp"
 HEADER = CPP / "datacomp.h"
 SIGS = ROOT / "src" / "nini_datacomp" / "_signatures.py"
-ABI_VERSION = 3
+ABI_VERSION = 5
 
 C_TYPES = {"u64": "uint64_t", "u32": "uint32_t", "u16": "uint16_t", "u8": "uint8_t", "i64": "int64_t", "i32": "int32_t"}
 CTYPES = {

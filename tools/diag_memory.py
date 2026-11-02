@@ -21,6 +21,9 @@ cada etapa (abrir as fontes, planejar, receber cada janela, alinhar) e roda vari
 - ``purge_0_segura``: purge na hora, segurando a janela anterior como o ``count_rows`` fazia (três janelas vivas).
 - ``sem_alinhar``: só lê as janelas, sem o C++ (separa o Polars dos kernels).
 - ``sem_pool``: ``NINI_DATACOMP_POOL=0`` (os buffers dos kernels sem o pool do C++).
+- ``leitura*``: só a leitura das janelas (sem os kernels), com o alocador como no pacote; ``_sem_poda`` lê a fonte
+  inteira em cada janela, ``_sem_prefetch`` uma janela por vez, ``_streaming`` com o engine streaming, ``_4GB`` com
+  janelas maiores, ``_sem_purge`` com o alocador do Polars sem configurar.
 
 Resultado em ``docs/benchmarks/diag_memoria.md`` e ``.json`` (não precisa entrar no commit).
 """
@@ -28,6 +31,7 @@ Resultado em ``docs/benchmarks/diag_memoria.md`` e ``.json`` (não precisa entra
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import os
 import subprocess
@@ -63,6 +67,7 @@ CASES = ("10000000x10", "10000000x50")
 MB = 1024 * 1024
 
 # nome -> (variáveis de ambiente, opções do worker)
+PURGE = {"MIMALLOC_PURGE_DELAY": "0", "MIMALLOC_RESET_DELAY": "0"}  # o alocador como o pacote o configura
 VARIANTS: dict[str, tuple[dict[str, str], dict[str, Any]]] = {
     "padrao": ({}, {}),
     "sem_prefetch": ({}, {"prefetch": False}),
@@ -80,6 +85,13 @@ VARIANTS: dict[str, tuple[dict[str, str], dict[str, Any]]] = {
     "purge_0_segura": ({"MIMALLOC_PURGE_DELAY": "0"}, {"hold": True}),
     "sem_alinhar": ({}, {"align": False}),
     "sem_pool": ({"NINI_DATACOMP_POOL": "0"}, {}),
+    # só a leitura (sem os kernels), com o alocador como no pacote: de onde vem o tempo de ler uma tabela larga
+    "leitura": (PURGE, {"align": False}),
+    "leitura_sem_poda": (PURGE, {"align": False, "prune": False}),
+    "leitura_sem_prefetch": (PURGE, {"align": False, "prefetch": False}),
+    "leitura_streaming": (PURGE, {"align": False, "engine": "streaming"}),
+    "leitura_4GB": (PURGE, {"align": False, "memory_limit": "4GB"}),
+    "leitura_sem_purge": ({}, {"align": False}),
 }
 
 
@@ -139,6 +151,8 @@ def worker(spec: dict[str, Any]) -> None:
         columns = [c for c in ls.lazy.collect_schema().names() if c in rnames]
     marks["open"] = _mem()
     plan = plan_windows(ls, rs, keys, spec.get("memory_limit", "1GB"))
+    if not spec.get("prune", True):  # cada janela lê a fonte inteira (como antes da poda por arquivo)
+        plan = dataclasses.replace(plan, files=(None, None))
     marks["plan"] = _mem()
     marks["plan_seconds"] = time.perf_counter() - t0
     reader = WindowReader(

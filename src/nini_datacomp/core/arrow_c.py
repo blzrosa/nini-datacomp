@@ -27,7 +27,16 @@ from collections.abc import Sequence
 from ctypes import CFUNCTYPE, POINTER, Structure, c_char_p, c_int, c_int64, c_void_p
 from typing import Any
 
-__all__ = ["ArrowArray", "ArrowSchema", "Exported", "Imported", "export_array", "import_series"]
+__all__ = [
+    "ArrowArray",
+    "ArrowSchema",
+    "Exported",
+    "Imported",
+    "ImportedBatch",
+    "export_array",
+    "import_batch",
+    "import_series",
+]
 
 
 class ArrowSchema(Structure):
@@ -307,6 +316,59 @@ def import_series(s: Any) -> Imported | None:
     if stream.get_next(ctypes.byref(stream), ctypes.byref(extra)) != 0:
         return None
     if extra.release:  # mais de um pedaço: o chamador junta os pedaços (rechunk) e tenta de novo
+        extra.release(ctypes.byref(extra))
+        return None
+    return out
+
+
+class ImportedBatch:
+    """Um lote do Arrow (um DataFrame exportado de uma vez: um struct com uma coluna por filho), dono dos buffers."""
+
+    __slots__ = ("array", "schema", "stream")
+
+    def __init__(self, schema: ArrowSchema, array: ArrowArray, stream: ArrowArrayStream) -> None:
+        self.schema = schema
+        self.array = array
+        self.stream = stream
+
+    @property
+    def schema_address(self) -> int:
+        return ctypes.addressof(self.schema)
+
+    @property
+    def array_address(self) -> int:
+        return ctypes.addressof(self.array)
+
+    def __del__(self) -> None:
+        if self.array.release:
+            self.array.release(ctypes.byref(self.array))
+        if self.schema.release:
+            self.schema.release(ctypes.byref(self.schema))
+        if self.stream.release:
+            self.stream.release(ctypes.byref(self.stream))
+
+
+def import_batch(df: Any) -> ImportedBatch | None:
+    """O DataFrame como um lote só do Arrow, pelo ``__arrow_c_stream__`` (sem copiar), ou None (Polars sem o
+    protocolo, algum tipo que ele não exporta, ou o DataFrame em mais de um lote)."""
+    stream = _take_stream(df)
+    if stream is None:
+        return None
+    schema = ArrowSchema()
+    if stream.get_schema(ctypes.byref(stream), ctypes.byref(schema)) != 0:
+        stream.release(ctypes.byref(stream))
+        return None
+    first = ArrowArray()
+    if stream.get_next(ctypes.byref(stream), ctypes.byref(first)) != 0 or not first.release:
+        if schema.release:
+            schema.release(ctypes.byref(schema))
+        stream.release(ctypes.byref(stream))
+        return None
+    out = ImportedBatch(schema, first, stream)  # daqui em diante, o __del__ dele libera
+    extra = ArrowArray()
+    if stream.get_next(ctypes.byref(stream), ctypes.byref(extra)) != 0:
+        return None
+    if extra.release:  # mais de um lote
         extra.release(ctypes.byref(extra))
         return None
     return out

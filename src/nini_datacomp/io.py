@@ -8,6 +8,7 @@ fase 6 (``ReadOptions``).
 from __future__ import annotations
 
 import glob
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -31,10 +32,25 @@ class Source:
     lazy: pl.LazyFrame
     files: tuple[Path, ...] = ()
     frame: pl.DataFrame | None = None  # a fonte já em memória (DataFrame), se for o caso
+    steps: tuple[tuple[pl.Expr, ...], ...] = ()  # os with_columns aplicados depois de ler (conversões de tipo)
 
     @property
     def is_parquet(self) -> bool:
         return bool(self.files)
+
+    def with_columns(self, exprs: Sequence[pl.Expr]) -> Source:
+        """A mesma fonte com ``exprs`` aplicadas (no LazyFrame, no DataFrame e em toda leitura de `scan`)."""
+        exprs = tuple(exprs)
+        frame = self.frame.with_columns(exprs) if self.frame is not None else None
+        return Source(self.lazy.with_columns(exprs), self.files, frame, (*self.steps, exprs))
+
+    def scan(self, files: Sequence[Path]) -> pl.LazyFrame:
+        """Só alguns dos arquivos Parquet da fonte, com as mesmas conversões: uma janela que cai em poucos arquivos
+        não faz o Polars abrir o rodapé de todos (com 300 colunas, ~1 ms cada, a cada janela)."""
+        lf = pl.scan_parquet([str(f) for f in files])
+        for exprs in self.steps:
+            lf = lf.with_columns(exprs)
+        return lf
 
 
 def _parquet_files(raw: str) -> list[Path]:
