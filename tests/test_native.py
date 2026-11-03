@@ -39,6 +39,13 @@ def test_bindings_are_up_to_date() -> None:
     assert r.returncode == 0, r.stdout + r.stderr
 
 
+@pytest.mark.skipif(not (ROOT / "tools" / "gen_casemap.py").exists(), reason="fora do repositório (wheel)")
+def test_case_tables_are_up_to_date() -> None:
+    cmd = [sys.executable, str(ROOT / "tools" / "gen_casemap.py"), "--check"]
+    r = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
 def test_env_var_pointing_nowhere(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     with monkeypatch.context() as mp:  # ao sair, a variável volta ao valor de antes (ou some, se não existia)
         mp.setenv(_native.ENV_VAR, str(tmp_path / "nada.so"))

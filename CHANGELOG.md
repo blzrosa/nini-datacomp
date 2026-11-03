@@ -4,6 +4,31 @@ Formato: [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/); versões: 
 
 ## [Não lançado]
 
+## [0.3.0] — 2026-11-03
+
+### Testes do datacompolars portados
+- `tests/test_port_*.py`: os testes de comportamento do datacompolars 0.4.4 (motor, chave composta, tabelas largas,
+  `common_keys_only`, relatório, fontes, SAS e validação das opções), rodando como lá por um adaptador
+  (`tests/port_helpers.py`) que traduz os nomes da tabela de migração.
+- Fora, com o motivo no topo de cada arquivo: as diferenças de propósito (`check_duplicate_keys`, o "caminho" único
+  hash/coluna a coluna, `columns_per_batch`, a mensagem do extra `[sas]`) e os testes das funções internas do motor
+  antigo (planejamento de janelas, lotes, normalização do hash, `align_schemas`), que aqui têm os próprios testes.
+- `only_common_keys`: chave repetida fora da faixa em comum também aborta, como no datacompolars (antes, só a de
+  dentro).
+
+### Fase 6c — comparadores próprios
+- `comparators={"coluna": ...}` (o `custom_comparators` do datacompolars), com a regra de nulos de sempre. A coluna sai
+  do hash de linha e é comparada em todos os pares pelo comparador; tolerâncias e opções de texto não se aplicam a
+  ela. Comparador numa coluna da chave é erro fatal; numa coluna que não é comparada, aviso no resultado.
+- `dc.expr` (`left`, `right`, `lit`): uma mini-linguagem compilada para um programa de pilha que o C++ roda por
+  blocos de 256 pares, em paralelo (`dc_expr_differs`, ABI 13), sem passar pelo Polars. Aritmética (inteiros em 64
+  bits, `/` real), comparações em ordem total como no Polars, lógica e texto (`lower`/`upper` com o mapeamento
+  completo do Unicode, inclusive o sigma final, de tabelas geradas por `tools/gen_casemap.py`; `strip` e
+  `remove_whitespace` com os espaços do Unicode; `len` em caracteres). Os testes conferem o resultado contra a
+  expressão equivalente do Polars em valores sortidos, com nulos e NaN.
+- Funções do Polars (`f(esquerda, direita) -> pl.Expr`) e os comparadores do datacompolars (`compare(col_l, col_r,
+  **kwargs)`) rodam no Polars, só nos pares da coluna, e avisam com `PerformanceWarning`.
+
 ### Fase 6b — aninhados e chaves em comum
 - Colunas List, Array e Struct comparadas pelo valor inteiro, pelo hash do valor (`Expr.hash` do Polars, UInt64;
   nulo continua nulo), que segue pelos mesmos kernels das outras colunas exatas; as amostras mostram o valor de
@@ -12,7 +37,7 @@ Formato: [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/); versões: 
   padrão do datacompolars**, que comparava toda List sem ordem: aqui, sem a opção, a ordem conta.
 - `only_common_keys=True` (o `common_keys_only` do datacompolars): só as linhas com a 1ª coluna da chave dentro da
   faixa que os dois lados têm (e as de chave nula) são lidas por inteiro; as de fora só são contadas, numa leitura só
-  da chave. Mesmo resultado, supondo chaves únicas fora da faixa.
+  da chave. Mesmo resultado (chave repetida fora da faixa também aborta).
 
 ## [0.2.0] — 2026-11-03
 

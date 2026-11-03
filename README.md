@@ -165,10 +165,45 @@ SAMPLE DIFFERING ROWS
 | `threads` | `None` | threads dos kernels C++ (padrão: todos os núcleos) |
 | `verify_hash` | `False` | confere as colunas exatas célula a célula em todos os pares, além do hash |
 | `unordered_lists` | `()` | colunas List comparadas sem a ordem dos elementos (`[1, 2]` = `[2, 1]`) |
+| `comparators` | `{}` | comparador próprio por coluna (veja [Comparadores próprios](#comparadores-próprios)) |
 | `only_common_keys` | `False` | tabelas com faixas de chave muito diferentes: só a faixa que os dois lados têm é lida por inteiro; o resto só é contado (mesmo resultado) |
 | `read` | `ReadOptions()` | como ler os arquivos (veja [Formatos](#formatos)) |
 
 Uma opção com nome errado é erro (`extra="forbid"`), em vez de ser ignorada.
+
+### Comparadores próprios
+
+`comparators={"coluna": ...}` troca a comparação de uma coluna (a chave não pode). A regra de nulos é a de sempre:
+nulo com nulo é igual, nulo de um lado só é diferente, e o comparador só decide os pares sem nulo. Tolerâncias e as
+opções de texto não se aplicam à coluna: quem decide é o comparador.
+
+O caminho rápido é o `dc.expr`, uma mini-linguagem que roda nos kernels C++:
+
+```python
+from nini_datacomp.expr import left, right
+
+dc.compare(
+    a,
+    b,
+    on="id",
+    comparators={
+        "nome": left.strip().lower() == right.strip().lower(),
+        "valor": (left - right).abs() <= 0.01 * right.abs(),
+        "codigo": left.remove_whitespace() == right.remove_whitespace(),
+    },
+)
+```
+
+Tem `+ - * /`, `abs()`, `== != < <= > >=`, `& | ~` e, no texto, `lower()`, `upper()`, `strip()`,
+`remove_whitespace()` e `len()`, com a semântica do Polars (inclusive o Unicode: `"ß".upper() == "SS"`). Lê
+inteiros (menos UInt64), reais, booleanos e texto; reais fazem conta em 64 bits.
+
+Para o resto, uma função `f(esquerda, direita) -> pl.Expr` (ou um comparador do datacompolars, com `compare`),
+que roda no Polars só nos pares daquela coluna e avisa com `PerformanceWarning`:
+
+```python
+comparators = {"itens": lambda l, r: l.list.sort() == r.list.sort()}
+```
 
 ### Tipos
 
@@ -225,7 +260,7 @@ Mesma semântica; mudam os nomes, e o que era ajuste interno do motor vira um or
 | — | `threads`, `verify_hash` | threads dos kernels C++; conferir o hash de linha célula a célula |
 | `common_keys_only` | `only_common_keys` | mesmo resultado, só mais barato com faixas de chave muito diferentes |
 | List comparada sem ordem (sempre) | `unordered_lists=[...]` | **muda o padrão**: as listas são comparadas com a ordem, a não ser as de `unordered_lists` |
-| `custom_comparators` | — | fase 6 |
+| `custom_comparators` | `comparators` | `dc.expr` no C++; funções do Polars e os comparadores do datacompolars continuam valendo, com `PerformanceWarning` |
 | `SourceOptions` | `read=ReadOptions(...)` | também um por lado; o SAS sem o extra `[sas]` (o ReadStat vem compilado) |
 | `result.fatal_errors` | `result.errors` | |
 | `result.column_stats` | `result.columns.mismatched()` | mesma ordem: da coluna que mais diverge para a que menos |

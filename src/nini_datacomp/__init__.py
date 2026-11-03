@@ -17,9 +17,10 @@ from .core.allocator import configure as _configure_allocator
 
 ALLOCATOR_STATUS = _configure_allocator()
 
+from . import expr  # noqa: E402
 from .api import compare  # noqa: E402
 from .core.memory import pool_limit, pool_stats, release_memory  # noqa: E402
-from .errors import AllocatorWarning, NativeLibraryError, UnsupportedTypeError  # noqa: E402
+from .errors import AllocatorWarning, NativeLibraryError, PerformanceWarning, UnsupportedTypeError  # noqa: E402
 from .options import CompareOptions  # noqa: E402
 from .readers import (  # noqa: E402
     ReadOptions,
@@ -53,12 +54,14 @@ __all__ = [
     "ComparisonResult",
     "ExecutionInfo",
     "NativeLibraryError",
+    "PerformanceWarning",
     "ReadOptions",
     "RowSummary",
     "TypeMismatch",
     "UnsupportedTypeError",
     "__version__",
     "compare",
+    "expr",
     "pool_limit",
     "pool_stats",
     "read_sas",

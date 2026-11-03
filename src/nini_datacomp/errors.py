@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-__all__ = ["AllocatorWarning", "NativeLibraryError", "UnsupportedTypeError"]
+__all__ = ["AllocatorWarning", "NativeLibraryError", "PerformanceWarning", "UnsupportedTypeError"]
 
 
 class NativeLibraryError(RuntimeError):
@@ -11,6 +11,10 @@ class NativeLibraryError(RuntimeError):
 
 class UnsupportedTypeError(TypeError):
     """Coluna de um tipo que os kernels C++ não leem (o pacote não tem caminho lento escondido para ela)."""
+
+
+class PerformanceWarning(UserWarning):
+    """Parte da comparação roda no Polars em vez dos kernels C++ (comparadores próprios em Python): mais lenta."""
 
 
 class AllocatorWarning(UserWarning):

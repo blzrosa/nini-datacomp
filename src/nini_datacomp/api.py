@@ -8,11 +8,14 @@ exatas, coluna a coluna nas com tolerância, contagens por coluna e amostras.
 from __future__ import annotations
 
 import time
+import warnings
 from collections.abc import Sequence
 from typing import Any
 
 import polars as pl
 
+from .core.comparators import Comparator, PolarsComparator, as_comparator
+from .errors import PerformanceWarning
 from .io import Source, SourceLike, open_source
 from .options import CompareOptions
 from .pipeline import RowCounts, _run, _tol_of, align_columns, sample_key_names
@@ -96,10 +99,16 @@ def _compare(
         return _failed(opts, keys, errors, left_only=left_only, right_only=right_only, t0=t0)
 
     cols = align_columns(ls, rs, keys, opts.cast)  # schemas só
+    dtypes_l = {c: cols.left_casts.get(c, lschema[c]) for c in lschema.names()}
+    comparators, errors, unused = _comparators(opts, keys, cols.compared, dtypes_l, abs_tol=abs_tol, rel_tol=rel_tol)
+    if errors:
+        return _failed(opts, keys, errors, left_only=left_only, right_only=right_only, t0=t0)
     unordered = [c.lower() for c in opts.unordered_lists] if lower else list(opts.unordered_lists)
     warnings: list[str] = []
     if unknown_lists := sorted(set(unordered) - {c for c in cols.compared if isinstance(lschema[c], pl.List)}):
         warnings.append(f"unordered_lists names columns that are not compared lists: {unknown_lists}")
+    if unused:
+        warnings.append(f"comparators names columns that are not compared: {unused}")
     if not cols.compared:
         warnings.append("No common columns besides the join key: only row membership was compared.")
     for label, tol in (("abs_tol", abs_tol), ("rel_tol", rel_tol)):
@@ -111,7 +120,7 @@ def _compare(
         prefetch=True, engine="auto", hashing=True, casting=opts.cast, verify_hash=opts.verify_hash,
         threads=opts.threads, abs_tol=abs_tol, rel_tol=rel_tol, ignore_case=opts.ignore_case,
         ignore_spaces=opts.ignore_whitespace, details=opts.details, samples=opts.samples, sources=(ls, rs),
-        unordered_lists=unordered, only_common_keys=opts.only_common_keys,
+        unordered_lists=unordered, only_common_keys=opts.only_common_keys, comparators=comparators,
     )  # fmt: skip
     if res.dup_left:
         errors.append(f"Duplicate join keys in the left table: {res.dup_left:,} surplus rows")
@@ -201,6 +210,40 @@ def _key_errors(lschema: pl.Schema, rschema: pl.Schema, keys: Sequence[str], cas
         for k in keys
         if lschema[k] != rschema[k]
     ]
+
+
+def _comparators(
+    opts: CompareOptions,
+    keys: Sequence[str],
+    compared: Sequence[str],
+    dtypes: dict[str, pl.DataType],
+    *,
+    abs_tol: float | dict[str, float],
+    rel_tol: float | dict[str, float],
+) -> tuple[dict[str, Comparator], list[str], list[str]]:
+    """Os comparadores próprios das colunas comparadas, os erros (comparador numa coluna da chave) e os nomes de
+    colunas que não são comparadas (ficam de fora, com um aviso no resultado)."""
+    lower = not opts.case_sensitive_columns
+    named = {(k.lower() if lower else k): v for k, v in opts.comparators.items()}
+    if clash := sorted(set(named) & set(keys)):
+        return {}, [f"comparators cannot include join key columns: {clash}"], []
+    out: dict[str, Comparator] = {}
+    unused = sorted(c for c in named if c not in compared)
+    for c, obj in named.items():
+        if c in unused:
+            continue
+        out[c] = as_comparator(
+            obj, dtypes[c], abs_tol=_tol_of(abs_tol, c), rel_tol=_tol_of(rel_tol, c),
+            ignore_spaces=opts.ignore_whitespace, ignore_case=opts.ignore_case,
+        )  # fmt: skip
+    slow = sorted(c for c, comp in out.items() if isinstance(comp, PolarsComparator))
+    if slow:
+        warnings.warn(
+            f"comparadores em Python rodam no Polars, mais devagar que os kernels C++ (use dc.expr): {slow}",
+            PerformanceWarning,
+            stacklevel=4,  # a linha de quem chamou dc.compare
+        )
+    return out, [], unused
 
 
 # ----------------------------------------------------------------------------- resultado

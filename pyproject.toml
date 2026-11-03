@@ -4,7 +4,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "nini-datacomp"
-version = "0.2.0"
+version = "0.3.0"
 description = "Comparação de tabelas em escala: kernels C++ sobre as colunas do Polars, com janelas por chave e relatório."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -64,6 +64,7 @@ cache-keys = [
     { file = "cpp/*.cpp" },
     { file = "cpp/*.hpp" },
     { file = "cpp/*.h" },
+    { file = "cpp/*.inc" },
     { file = "cpp/third_party/**/*.c" },
     { file = "cpp/third_party/**/*.h" },
     { file = "cpp/third_party/**/*.inc" },
@@ -81,7 +82,7 @@ cmake.build-type = "Release"
 wheel.py-api = "py3"
 wheel.packages = ["src/nini_datacomp"]
 build-dir = "build/{wheel_tag}"
-sdist.include = ["cpp/*.cpp", "cpp/*.hpp", "cpp/*.h", "cpp/third_party/**", "CMakeLists.txt", "NOTICE"]
+sdist.include = ["cpp/*.cpp", "cpp/*.hpp", "cpp/*.h", "cpp/*.inc", "cpp/third_party/**", "CMakeLists.txt", "NOTICE"]
 sdist.exclude = [".github", "build", "benchmarks", "data"]
 
 [tool.scikit-build.cmake.define]
@@ -132,6 +133,8 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["PLR2004", "N802", "N803", "N806"]
+# os testes portados do datacompolars ficam como lá (o estilo de asserts e listas daquele repositório)
+"tests/test_port_*.py" = ["PT006", "PT018", "RUF005"]
 
 [tool.pyright]
 pythonVersion = "3.10"

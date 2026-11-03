@@ -164,9 +164,10 @@ def test_only_common_keys_from_parquet_and_edges(tmp_path: Any) -> None:
     assert _summary(dc.compare(lc, rc, ["k", "k2"], only_common_keys=True)) == _summary(dc.compare(lc, rc, ["k", "k2"]))
 
 
-def test_only_common_keys_still_finds_duplicates_in_overlap() -> None:
+@pytest.mark.parametrize("key", [300, 10])  # dentro e fora da faixa em comum (250..399)
+def test_only_common_keys_still_finds_duplicates(key: int) -> None:
     left, right = _tables(5)
-    dup = pl.concat([left, left.filter(pl.col("k") == 300)])
+    dup = pl.concat([left, left.filter(pl.col("k") == key)])
     res = dc.compare(dup, right, "k", only_common_keys=True)
     assert res.aborted
-    assert "Duplicate join keys in the left table" in res.errors[0]
+    assert res.errors[0] == "Duplicate join keys in the left table: 1 surplus rows"

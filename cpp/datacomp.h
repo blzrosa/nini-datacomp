@@ -5,7 +5,7 @@
 #pragma once
 #include <stdint.h>
 
-#define DC_ABI_VERSION 12
+#define DC_ABI_VERSION 13
 
 // DC_API: exportada ao compilar a biblioteca (DC_BUILDING), importada ao usá-la de outro código C/C++
 #if defined(_WIN32)
@@ -35,6 +35,9 @@ DC_API int dc_compare_rows(int k, const int64_t* left, const int64_t* right, int
 DC_API int dc_compare_pairs(int k, int pl, const int64_t* lstarts, const int64_t* ldesc, int pr, const int64_t* rstarts, const int64_t* rdesc, const uint32_t* li, const uint32_t* ri, const uint32_t* subset, int64_t n, int64_t start, int64_t end, uint8_t* differs);
 DC_API int64_t dc_compare_column_all(const int64_t* left, const int64_t* right, const uint32_t* li, const uint32_t* ri, const uint32_t* subset, int64_t n, int tolerance, double abs_tol, double rel_tol, double scale, uint8_t* differs, int threads);
 DC_API int dc_compare_pairs_all(int k, int pl, const int64_t* lstarts, const int64_t* ldesc, int pr, const int64_t* rstarts, const int64_t* rdesc, const uint32_t* li, const uint32_t* ri, const uint32_t* subset, int64_t n, uint8_t* differs, int threads);
+
+/* expr.cpp */
+DC_API int64_t dc_expr_differs(const int64_t* left, const int64_t* right, const uint32_t* li, const uint32_t* ri, int64_t n, const int64_t* code, int64_t ncode, const double* fconst, const int64_t* iconst, const uint8_t* sdata, const int64_t* soff, uint8_t* differs, int threads);
 
 /* keys.cpp */
 DC_API int dc_align_keys(int k, const int64_t* left, int64_t nl, const int64_t* right, int64_t nr, int strategy, uint32_t* li, uint32_t* ri, int64_t* out, int threads);

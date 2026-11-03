@@ -25,6 +25,7 @@ import numpy as np
 import polars as pl
 
 from .core.arrow import import_column, import_frame
+from .core.comparators import Comparator
 from .core.compare import Tolerance, compare_column, compare_pairs, tolerance_for
 from .core.keys import Alignment, align_frames, align_keys, align_pieces
 from .core.memory import empty
@@ -415,14 +416,15 @@ def _nested_as_hash(
 
 
 def _restrict_to_overlap(
-    ls: Source, rs: Source, key: str, dtype: pl.DataType
-) -> tuple[Source, Source, tuple[int, int]]:
+    ls: Source, rs: Source, keys: Sequence[str], dtype: pl.DataType
+) -> tuple[Source, Source, tuple[int, int], tuple[int, int]]:
     """``only_common_keys``: só as linhas com a 1ª coluna da chave dentro da faixa que os dois lados têm (e as de
     chave nula, que se casam entre si) seguem para as janelas; as de fora não têm par e só são contadas, lendo só a
-    chave. Devolve as fontes filtradas e quantas linhas ficaram de fora em cada lado. Tipos sem ordem: nada muda."""
+    chave. Devolve as fontes filtradas, quantas linhas ficaram de fora em cada lado e quantas delas repetem a chave
+    (como no datacompolars, chave repetida fora da faixa também aborta). Tipos sem ordem: nada muda."""
     if not (dtype.is_numeric() or dtype.is_temporal() or dtype in (pl.String, pl.Boolean)):
-        return ls, rs, (0, 0)
-    k = pl.col(key)
+        return ls, rs, (0, 0), (0, 0)
+    k = pl.col(keys[0])
     lo_hi = [s.lazy.select(k.min().alias("lo"), k.max().alias("hi")) for s in (ls, rs)]
     (lmin, lmax), (rmin, rmax) = (tuple(f.row(0)) for f in pl.collect_all(lo_hi))
     if None in (lmin, lmax, rmin, rmax):  # um lado sem chave não nula: nenhuma tem par
@@ -430,9 +432,10 @@ def _restrict_to_overlap(
     else:
         lo, hi = max(lmin, rmin), min(lmax, rmax)
         inside = k.is_null() | (k.is_between(pl.lit(lo, dtype), pl.lit(hi, dtype)) if lo <= hi else pl.lit(False))
-    counts = pl.collect_all([s.lazy.select((~inside).sum().alias("n")) for s in (ls, rs)])
-    outside = (int(counts[0].item() or 0), int(counts[1].item() or 0))
-    return ls.filter(inside), rs.filter(inside), outside
+    key = pl.struct(keys) if len(keys) > 1 else pl.col(keys[0])
+    queries = [s.lazy.filter(~inside).select(pl.len().alias("n"), key.n_unique().alias("u")) for s in (ls, rs)]
+    (nl, ul), (nr, ur) = (tuple(int(v or 0) for v in f.row(0)) for f in pl.collect_all(queries))
+    return ls.filter(inside), rs.filter(inside), (nl, nr), (nl - ul if nl else 0, nr - ur if nr else 0)
 
 
 def count_rows(
@@ -514,6 +517,7 @@ def _run(
     sources: tuple[Source, Source] | None = None,
     unordered_lists: Collection[str] = (),
     only_common_keys: bool = False,
+    comparators: Mapping[str, Comparator] | None = None,
 ) -> RowCounts:
     t0 = time.perf_counter()
     keys = list(on)
@@ -524,14 +528,17 @@ def _run(
         keep = details and samples > 0
         text = {"ignore_case": ignore_case, "ignore_spaces": ignore_spaces, "keep_original": keep}
         ls, rs, tolerances, names = _prepare_columns(
-            ls, rs, cols, abs_tol=abs_tol, rel_tol=rel_tol, text=text, unordered=unordered_lists
-        )
+            ls, rs, cols, abs_tol=abs_tol, rel_tol=rel_tol, text=text, unordered=unordered_lists,
+            own=comparators or {},
+        )  # fmt: skip
         read = cols.compared
     else:
         cols, tolerances = None, {}
         read = list(columns) if columns is not None else _common_names(ls, rs)
     ls, rs, dtypes = prepare_keys(ls, rs, keys)
-    ls, rs, outside = _restrict_to_overlap(ls, rs, keys[0], dtypes[0]) if only_common_keys else (ls, rs, (0, 0))
+    ls, rs, outside, dup_out = (
+        _restrict_to_overlap(ls, rs, keys, dtypes[0]) if only_common_keys else (ls, rs, (0, 0), (0, 0))
+    )
     t = time.perf_counter()
     setup_s = t - t0  # abrir as fontes, alinhar os schemas, as conversões de tipo
     plan = plan_windows(ls, rs, keys, memory_limit, window_rows=window_rows)
@@ -544,7 +551,8 @@ def _run(
         ls, rs, plan, keys, dtypes, columns_left=read, columns_right=read, groups=reads, prefetch=prefetch,
         engine=engine,
     )  # fmt: skip
-    totals: dict[str, int] = defaultdict(int)
+    # as chaves repetidas fora da faixa em comum (only_common_keys) já contam: a comparação aborta como sem a opção
+    totals: dict[str, int] = defaultdict(int, dup_left=dup_out[0], dup_right=dup_out[1])
     strategies: dict[str, int] = defaultdict(int)
     spent: dict[str, float] = defaultdict(float)
     state: _WindowState | None = None
@@ -552,7 +560,7 @@ def _run(
     col_counts: dict[str, int] = dict.fromkeys(cols.compared if cols is not None else (), 0)
     ctx = _Context(
         keys=keys, tolerances=tolerances, names=names, counts=col_counts, details=details, samples=samples,
-        verify=verify_hash, threads=threads, spent=spent,
+        verify=verify_hash, threads=threads, spent=spent, comparators=dict(comparators or {}),
     )  # fmt: skip
     for _, g, lf, rf in reader.pieces():
         t = time.perf_counter()
@@ -620,17 +628,20 @@ def _prepare_columns(
     rel_tol: Tol,
     text: dict[str, bool],
     unordered: Collection[str] = (),
+    own: Collection[str] = (),
 ) -> tuple[Source, Source, dict[str, Tolerance], dict[str, str]]:
     """As conversões das colunas comparadas (casting, dicionário para texto, opções de texto, aninhadas pelo hash),
     as tolerâncias e o nome da coluna que cada uma compara (o texto normalizado ou o hash, se houver)."""
     ls, rs = _with_casts(ls, cols.left_casts), _with_casts(rs, cols.right_casts)
     ls, rs = _dictionary_as_text(ls, cols.compared), _dictionary_as_text(rs, cols.compared)
-    tolerances = _tolerances(ls, cols.compared, abs_tol, rel_tol)  # antes do hash: ele vira UInt64 (numérico)
-    ls, names = _normalize_text(ls, cols.compared, **text)
-    rs, _ = _normalize_text(rs, cols.compared, **text)
+    # as colunas com comparador próprio recebem o valor como está (ele decide sobre texto, tolerância e aninhados)
+    builtin = [c for c in cols.compared if c not in own]
+    tolerances = _tolerances(ls, builtin, abs_tol, rel_tol)  # antes do hash: ele vira UInt64 (numérico)
+    ls, names = _normalize_text(ls, builtin, **text)
+    rs, _ = _normalize_text(rs, builtin, **text)
     keep = text.get("keep_original", False)
-    ls, nested = _nested_as_hash(ls, cols.compared, unordered=unordered, keep_original=keep)
-    rs, _ = _nested_as_hash(rs, cols.compared, unordered=unordered, keep_original=keep)
+    ls, nested = _nested_as_hash(ls, builtin, unordered=unordered, keep_original=keep)
+    rs, _ = _nested_as_hash(rs, builtin, unordered=unordered, keep_original=keep)
     return ls, rs, tolerances, names | nested
 
 
@@ -694,6 +705,7 @@ class _Context:
     verify: bool
     threads: int | None
     spent: dict[str, float]
+    comparators: dict[str, Comparator] = field(default_factory=dict)
     found: dict[str, list[pl.DataFrame]] = field(default_factory=dict)
 
     def data(self, column: str) -> str:
@@ -723,7 +735,7 @@ class _WindowState:
     def add(self, lf: pl.DataFrame, rf: pl.DataFrame, columns: Sequence[str], t: float) -> int:
         """Compara um grupo de colunas; devolve quantos pedaços de memória o hash leu."""
         ctx = self.ctx
-        exact = [c for c in columns if c not in ctx.tolerances]
+        exact = [c for c in columns if c not in ctx.tolerances and c not in ctx.comparators]
         pieces = 0
         if exact:
             data = [ctx.data(c) for c in exact]
@@ -749,6 +761,13 @@ class _WindowState:
                     threads=ctx.threads,
                 )  # fmt: skip
                 self.bad |= differs
+                ctx.counts[c] += n
+                if n and ctx.wants_samples(c):
+                    self._sample(lf, rf, c, np.flatnonzero(differs))
+            elif c in ctx.comparators:  # comparador próprio: em todos os pares, pelo próprio comparador
+                differs = ctx.comparators[c].differs(lf[c], rf[c], self.a.left, self.a.right)
+                self.bad |= differs
+                n = int(differs.sum(dtype=np.int64))
                 ctx.counts[c] += n
                 if n and ctx.wants_samples(c):
                     self._sample(lf, rf, c, np.flatnonzero(differs))

@@ -8,10 +8,11 @@ com os ajustes da tabela de migração do README (``names`` no lugar de ``left_n
 from __future__ import annotations
 
 import math
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from .core.comparators import is_comparator
 from .readers import ReadOptions
 from .windows import parse_memory_limit
 
@@ -74,12 +75,19 @@ class CompareOptions(BaseModel):
             "comparadas com a ordem (no datacompolars, todas eram sem ordem)."
         ),
     )
+    comparators: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Comparador próprio por coluna: uma função f(esquerda, direita) -> pl.Expr booleana (roda no Polars, com "
+            "PerformanceWarning), um comparador do datacompolars, ou uma expressão de dc.expr (roda no C++)."
+        ),
+    )
     only_common_keys: bool = Field(
         default=False,
         description=(
             "Para tabelas com faixas de chave muito diferentes: só as linhas com a 1ª coluna da chave dentro da faixa "
             "que os dois lados têm são lidas por inteiro; as de fora só são contadas (lendo só a chave). O resultado é "
-            "o mesmo, supondo chaves únicas fora da faixa (lá elas não são conferidas)."
+            "o mesmo (chave repetida fora da faixa também aborta, como no datacompolars)."
         ),
     )
     read: ReadOptions | tuple[ReadOptions, ReadOptions] = Field(
@@ -102,6 +110,14 @@ class CompareOptions(BaseModel):
             raise ValueError("names não pode ter rótulo vazio")
         if v[0] == v[1]:
             raise ValueError("names precisa de dois rótulos diferentes")
+        return v
+
+    @field_validator("comparators")
+    @classmethod
+    def _valid_comparators(cls, v: dict[str, Any]) -> dict[str, Any]:
+        bad = sorted(name for name, c in v.items() if not is_comparator(c))
+        if bad:
+            raise ValueError(f"comparators: não são comparadores (função ou dc.expr): {bad}")
         return v
 
     @field_validator("abs_tol", "rel_tol")
