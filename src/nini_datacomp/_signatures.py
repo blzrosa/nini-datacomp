@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from ctypes import c_double, c_float, c_int, c_int64, c_uint8, c_uint16, c_uint32, c_uint64, c_void_p
 
-ABI_VERSION = 6
+ABI_VERSION = 8
 
 # nome: (tipo de retorno, [tipos dos argumentos])
 SIGNATURES = {
@@ -11,6 +11,8 @@ SIGNATURES = {
     "dc_count_unset": (c_int64, [c_void_p, c_int64, c_int64]),
     "dc_describe_batch": (c_int, [c_void_p, c_void_p, c_int, c_void_p]),
     "dc_compare_column": (c_int64, [c_void_p, c_void_p, c_void_p, c_void_p, c_void_p, c_int64, c_int64, c_int, c_double, c_double, c_double, c_void_p]),
+    "dc_compare_rows": (c_int, [c_int, c_void_p, c_void_p, c_int64, c_int64, c_int64, c_void_p]),
+    "dc_compare_pairs": (c_int, [c_int, c_int, c_void_p, c_void_p, c_int, c_void_p, c_void_p, c_void_p, c_void_p, c_void_p, c_int64, c_int64, c_int64, c_void_p]),
     "dc_align_keys": (c_int, [c_int, c_void_p, c_int64, c_void_p, c_int64, c_int, c_void_p, c_void_p, c_void_p]),
     "dc_pool_alloc": (c_int64, [c_int64]),
     "dc_pool_free": (None, [c_int64]),

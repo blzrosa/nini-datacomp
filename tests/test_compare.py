@@ -3,15 +3,17 @@ do datacompolars 0.4.4 (o `NumericComparator` e o `eq_missing`) rodando no Polar
 
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
+from itertools import pairwise
 from typing import Any
 
 import numpy as np
 import polars as pl
 import pytest
 
-from nini_datacomp.core.arrow import import_column
-from nini_datacomp.core.compare import Tolerance, compare_column, tolerance_for
+from nini_datacomp.core.arrow import import_column, import_frame
+from nini_datacomp.core.compare import Tolerance, compare_column, compare_frames, compare_pairs, tolerance_for
 
 
 def _datacompolars(left: pl.Series, right: pl.Series, abs_tol: float, rel_tol: float) -> list[bool]:
@@ -118,3 +120,75 @@ def test_subset_and_accumulate() -> None:
     assert (acc.tolist(), n) == ([0, 1, 0, 1], 1)  # acumula, nunca apaga
     with pytest.raises(ValueError, match="tipos diferentes"):
         compare_column(left, import_column(pl.Series(["a"] * 4)), idx, idx)
+
+
+def test_compare_frames_matches_compare_column() -> None:
+    """`compare_frames` (todas as colunas numa chamada, `dc_compare_rows`) dá o mesmo que `compare_column` coluna a
+    coluna, em todos os tipos, com nulos, NaN e -0.0."""
+    rng = np.random.default_rng(3)
+    n = 70_000  # mais de um bloco
+    pick = rng.integers(0, 4, n)
+
+    def side(shift: int) -> pl.DataFrame:
+        ints = (pick + shift * (rng.random(n) < 0.1)).tolist()
+        floats = [[0.0, -0.0, float("nan"), 1.5][(v + shift) % 4] for v in pick.tolist()]
+        return pl.DataFrame(
+            {
+                "i": [None if v == 3 else v for v in ints],
+                "u": pl.Series(ints, dtype=pl.UInt16),
+                "f": floats,
+                "f32": pl.Series(floats, dtype=pl.Float32),
+                "s": [None if v == 0 else "texto bem maior que doze " * v for v in ints],
+                "b": [v % 2 == 0 for v in ints],
+                "d": [date(2026, 1, 1 + v % 28) for v in ints],
+            }
+        )
+
+    left, right = side(0), side(1)
+    differs = compare_frames(left, right, threads=4)
+    rows = np.arange(n, dtype=np.uint32)
+    for j, c in enumerate(left.columns):
+        want, count = compare_column(import_column(left[c]), import_column(right[c]), rows, rows)
+        assert np.array_equal(differs[j], want), c
+        assert int(differs[j].sum()) == count
+    assert compare_frames(left.head(0), right.head(0)).shape == (left.width, 0)
+    with pytest.raises(ValueError, match="mesmas colunas"):
+        compare_frames(left, right.head(5))
+
+
+def test_compare_pairs_reads_the_window_pieces() -> None:
+    """`compare_pairs` (`dc_compare_pairs`) lê as colunas direto dos pedaços de memória da janela (os mesmos do hash
+    de linha), com pedaços de tamanhos diferentes dos dois lados e os pares fora de ordem: mesmo resultado que
+    `compare_column` nas colunas inteiras."""
+    rng = np.random.default_rng(5)
+
+    def frame(n: int) -> pl.DataFrame:
+        v = rng.integers(0, 3, n)
+        return pl.DataFrame(
+            {"i": [None if x == 2 else int(x) for x in v], "s": ["um texto maior que doze " * int(x) for x in v]}
+        )
+
+    left, right = frame(9_000), frame(8_000)
+    lcuts, rcuts = [0, 3_000, 3_500, 9_000], [0, 8_000]
+
+    def pieces(df: pl.DataFrame, cuts: list[int], frames: bool) -> list[tuple[int, Any]]:
+        out: list[tuple[int, Any]] = []
+        for a, b in pairwise(cuts):
+            part = df.slice(a, b - a)
+            got = import_frame(part) if frames else None
+            out.append((a, got if got is not None else [import_column(part[c]) for c in part.columns]))
+        return out
+
+    li = rng.integers(0, left.height, 70_000).astype(np.uint32)
+    ri = rng.integers(0, right.height, 70_000).astype(np.uint32)
+    subset = np.sort(rng.choice(li.size, 5_000, replace=False))
+    for frames in (True, False):
+        lp, rp = pieces(left, lcuts, frames), pieces(right, rcuts, not frames)
+        whole = compare_pairs(lp, rp, li, ri, columns=2, threads=4)
+        some = compare_pairs(lp, rp, li, ri, columns=2, subset=subset)
+        for j, c in enumerate(left.columns):
+            want, _ = compare_column(import_column(left[c]), import_column(right[c]), li, ri)
+            assert np.array_equal(whole[j], want), c
+            assert np.array_equal(some[j], want[subset]), c
+    with pytest.raises(ValueError, match="fora da janela"):
+        compare_pairs(pieces(left, lcuts, True), pieces(right, rcuts, True), li + 9_000, ri, columns=2)

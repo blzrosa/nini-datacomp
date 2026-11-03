@@ -5,7 +5,7 @@
 #pragma once
 #include <stdint.h>
 
-#define DC_ABI_VERSION 6
+#define DC_ABI_VERSION 8
 
 // DC_API: exportada ao compilar a biblioteca (DC_BUILDING), importada ao usá-la de outro código C/C++
 #if defined(_WIN32)
@@ -31,6 +31,8 @@ DC_API int dc_describe_batch(const uint8_t* schema, const uint8_t* array, int k,
 
 /* compare.cpp */
 DC_API int64_t dc_compare_column(const int64_t* left, const int64_t* right, const uint32_t* li, const uint32_t* ri, const uint32_t* subset, int64_t start, int64_t end, int tolerance, double abs_tol, double rel_tol, double scale, uint8_t* differs);
+DC_API int dc_compare_rows(int k, const int64_t* left, const int64_t* right, int64_t n, int64_t start, int64_t end, uint8_t* differs);
+DC_API int dc_compare_pairs(int k, int pl, const int64_t* lstarts, const int64_t* ldesc, int pr, const int64_t* rstarts, const int64_t* rdesc, const uint32_t* li, const uint32_t* ri, const uint32_t* subset, int64_t n, int64_t start, int64_t end, uint8_t* differs);
 
 /* keys.cpp */
 DC_API int dc_align_keys(int k, const int64_t* left, int64_t nl, const int64_t* right, int64_t nr, int strategy, uint32_t* li, uint32_t* ri, int64_t* out);

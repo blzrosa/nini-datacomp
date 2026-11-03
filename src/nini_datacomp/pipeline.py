@@ -25,8 +25,8 @@ import numpy as np
 import polars as pl
 
 from .core.arrow import import_column, import_frame
-from .core.compare import Tolerance, compare_column, tolerance_for
-from .core.keys import Alignment, align_keys
+from .core.compare import Tolerance, compare_column, compare_pairs, tolerance_for
+from .core.keys import Alignment, align_frames, align_keys
 from .core.memory import empty
 from .core.rowhash import Part, diff_pairs, row_hash, row_hash_parts
 from .errors import UnsupportedTypeError
@@ -128,7 +128,7 @@ class WindowReader:
         self.prefetch = prefetch
         self.engine: Engine = engine
         self.timer = _Timer()
-        self.window_bytes = 0  # maior parte lida (os dois lados), pelo tamanho estimado do Polars
+        self.window_bytes = 0  # maior parte lida (os dois lados), pelos bytes por linha do plano
 
     def _read_side(
         self, src: Source, window: Window, columns: list[str] | None, files: tuple[int, ...] | None
@@ -163,6 +163,7 @@ class WindowReader:
         else:
             lf = self._read_side(self.left, window, cols_l, files_l)
             rf = self._read_side(self.right, window, cols_r, files_r)
+        self._track(lf, rf)
         return window, g, lf, rf, time.perf_counter() - t
 
     def pieces(self) -> Iterator[tuple[Window, int, pl.DataFrame, pl.DataFrame]]:
@@ -172,7 +173,6 @@ class WindowReader:
             for task in tasks:
                 w, g, lf, rf, spent = self._read(task)
                 self.timer.seconds["read"] += spent
-                self._track(lf, rf)
                 yield w, g, lf, rf
                 _dispose(lf, rf)  # a última referência: a memória é solta noutra thread
                 del lf, rf
@@ -189,7 +189,6 @@ class WindowReader:
                 self.timer.seconds["read_background"] += spent
                 # a seguinte começa já; esta parte e a seguinte são as duas em memória
                 pending = pool.submit(self._read, tasks[i + 1]) if i + 1 < len(tasks) else None
-                self._track(lf, rf)
                 yield w, g, lf, rf
                 _dispose(lf, rf)  # a última referência: a memória é solta noutra thread
                 del lf, rf
@@ -202,7 +201,7 @@ class WindowReader:
             del lf, rf
 
     def _track(self, lf: pl.DataFrame, rf: pl.DataFrame) -> None:
-        self.window_bytes = max(self.window_bytes, int(lf.estimated_size() + rf.estimated_size()))
+        self.window_bytes = max(self.window_bytes, self.plan.frame_bytes(lf, rf))
 
 
 _side_executor: ThreadPoolExecutor | None = None
@@ -509,7 +508,7 @@ def _run(
     for _, g, lf, rf in reader.pieces():
         t = time.perf_counter()
         if g == 0:  # a primeira parte da janela: alinha as chaves (todas as partes trazem as mesmas linhas)
-            a = align_keys([import_column(lf[k]) for k in keys], [import_column(rf[k]) for k in keys])
+            a = _align_window(lf, rf, keys)
             t = _lap(spent, "align", t)
             aborted = _count(a, lf.height, rf.height, totals, strategies)
             hashing_now = groups is not None and not aborted and a.left.size > 0
@@ -593,6 +592,15 @@ def _timings(timings: dict[str, float], t0: float) -> dict[str, float]:
     return timings | {"other": max(0.0, total - measured), "total": total}
 
 
+def _align_window(lf: pl.DataFrame, rf: pl.DataFrame, keys: Sequence[str]) -> Alignment:
+    """As chaves da janela alinhadas: as colunas da chave de cada lado numa exportação só do Polars (juntando os
+    pedaços antes, como `import_column` já fazia); coluna a coluna se um lado não exporta assim (Categorical...)."""
+    left, right = import_frame(lf.select(keys).rechunk()), import_frame(rf.select(keys).rechunk())
+    if left is not None and right is not None:
+        return align_frames(left, right)
+    return align_keys([import_column(lf[k]) for k in keys], [import_column(rf[k]) for k in keys])
+
+
 def _lap(spent: dict[str, float], name: str, since: float) -> float:
     now = time.perf_counter()
     spent[name] += now - since
@@ -651,7 +659,8 @@ class _WindowState:
         if exact:
             data = [ctx.data(c) for c in exact]
             hl, hr = empty(lf.height, np.uint64), empty(rf.height, np.uint64)
-            pieces = _hash_side(lf, data, ctx.threads, hl, 0) + _hash_side(rf, data, ctx.threads, hr, 0)
+            lparts, rparts = _hash_side(lf, data, ctx.threads, hl, 0), _hash_side(rf, data, ctx.threads, hr, 0)
+            pieces = len(lparts) + len(rparts)
             t = _lap(ctx.spent, "hash", t)
             d = diff_pairs([], [], hl, hr, left_rows=self.a.left, right_rows=self.a.right, threads=ctx.threads)
             del hl, hr
@@ -661,7 +670,8 @@ class _WindowState:
             else:
                 self.bad[d.pairs] = 1
                 if ctx.details:
-                    t = self._count_exact(lf, rf, exact, d.pairs, t)
+                    t = self._count_exact(lf, rf, exact, d.pairs, t, parts=(lparts, rparts))
+            del lparts, rparts
         for c in columns:
             # com tolerância: em todos os pares, a coluna inteira dos dois lados (juntando os pedaços: uma cópia)
             if c in ctx.tolerances:
@@ -677,24 +687,69 @@ class _WindowState:
         return pieces
 
     def _count_exact(
-        self, lf: pl.DataFrame, rf: pl.DataFrame, columns: Sequence[str], pairs: np.ndarray, t: float
+        self,
+        lf: pl.DataFrame,
+        rf: pl.DataFrame,
+        columns: Sequence[str],
+        pairs: np.ndarray,
+        t: float,
+        *,
+        parts: tuple[list[tuple[int, Part]], list[tuple[int, Part]]],
     ) -> float:
-        """Divergências por coluna, só nos pares divergentes (poucos): as linhas deles lado a lado, coluna a coluna."""
+        """Divergências por coluna, só nos pares divergentes (poucos): todas as colunas numa chamada ao C++, lidas dos
+        mesmos pedaços que o hash leu (``parts``), sem reunir as linhas no Polars. Com amostras, os pares vão antes
+        para a ordem da chave, e as amostras de cada coluna são as primeiras posições em que ela diverge (uma consulta
+        ao Polars por lado, só nessas linhas)."""
         if not pairs.size:
             return t
         ctx = self.ctx
-        li, ri = pl.Series(self.a.left[pairs]), pl.Series(self.a.right[pairs])
-        left = lf.select([pl.col(ctx.data(c)).gather(li) for c in columns])
-        right = rf.select([pl.col(ctx.data(c)).gather(ri) for c in columns])
-        same = np.arange(pairs.size, dtype=np.uint32)
-        for c in columns:
-            differs, n = compare_column(
-                import_column(left[ctx.data(c)]), import_column(right[ctx.data(c)]), same, same, threads=ctx.threads
-            )
+        if any(ctx.wants_samples(c) for c in columns):
+            pairs = self._in_key_order(lf, pairs)
+        differs = compare_pairs(
+            parts[0], parts[1], self.a.left, self.a.right, columns=len(columns), subset=pairs, threads=ctx.threads
+        )
+        want: dict[str, np.ndarray] = {}
+        for c, row, n in zip(columns, differs, differs.sum(axis=1, dtype=np.int64).tolist(), strict=True):
             ctx.counts[c] += n
             if n and ctx.wants_samples(c):
-                self._sample(lf, rf, c, pairs[np.flatnonzero(differs)])
+                want[c] = np.flatnonzero(row)[: ctx.missing_samples(c)]
+        if want:
+            self._samples_at(lf, rf, pairs, want)
         return _lap(ctx.spent, "columns", t)
+
+    def _samples_at(self, lf: pl.DataFrame, rf: pl.DataFrame, pairs: np.ndarray, want: dict[str, np.ndarray]) -> None:
+        """As amostras: ``want[c]`` são as posições (em ``pairs``, já na ordem da chave) em que a coluna c diverge.
+        Uma consulta por lado, só nas linhas de todas as amostras juntas; cada coluna pega as suas por índice."""
+        ctx = self.ctx
+        union = np.unique(np.concatenate(list(want.values())))
+        lu, ru = pl.Series(self.a.left[pairs[union]]), pl.Series(self.a.right[pairs[union]])
+        names = sample_key_names(len(ctx.keys))
+        cols = list(want)
+        left = lf.select(
+            *[pl.col(k).gather(lu).alias(n) for k, n in zip(ctx.keys, names, strict=True)],
+            *[pl.col(c).gather(lu) for c in cols],
+        )
+        right = rf.select([pl.col(c).gather(ru) for c in cols])
+        # os valores em listas do Python, uma vez: indexar uma Series do Polars passa por uma consulta (~1 ms cada, e
+        # são 3 por coluna); as listas voltam a DataFrame com os tipos de antes
+        lvals, rvals = left.to_dict(as_series=False), right.to_dict(as_series=False)
+        lschema, rschema = left.schema, right.schema
+        for c in cols:
+            pos = np.searchsorted(union, want[c]).tolist()
+            sample = {n: [lvals[n][i] for i in pos] for n in names}
+            sample["__left"] = [lvals[c][i] for i in pos]
+            sample["__right"] = [rvals[c][i] for i in pos]
+            schema = {n: lschema[n] for n in names} | {"__left": lschema[c], "__right": rschema[c]}
+            ctx.found.setdefault(c, []).append(pl.DataFrame(sample, schema=schema))
+
+    def _in_key_order(self, lf: pl.DataFrame, pairs: np.ndarray) -> np.ndarray:
+        """Os pares na ordem da chave (nulos primeiro, como no datacompolars)."""
+        keys = self.ctx.keys
+        li = pl.Series(self.a.left[pairs])
+        names = sample_key_names(len(keys))
+        frame = lf.select([pl.col(k).gather(li).alias(n) for k, n in zip(keys, names, strict=True)])
+        order = frame.with_row_index("__pos").sort(names, nulls_last=False)["__pos"].to_numpy()
+        return pairs[order]
 
     def _verify(
         self, lf: pl.DataFrame, rf: pl.DataFrame, columns: Sequence[str], hashed: np.ndarray, t: float
@@ -750,13 +805,15 @@ def _pieces(df: pl.DataFrame, columns: Sequence[str]) -> list[tuple[int, int]]:
     return [(a, b) for a, b in pairwise(edges) if b > a]
 
 
-def _hash_side(df: pl.DataFrame, columns: Sequence[str], threads: int | None, out: np.ndarray, first: int) -> int:
+def _hash_side(
+    df: pl.DataFrame, columns: Sequence[str], threads: int | None, out: np.ndarray, first: int
+) -> list[tuple[int, Part]]:
     """Continua (ou começa, com ``first`` = 0) em ``out`` o hash de linha de um lado da janela com ``columns``, pedaço
-    a pedaço (sem juntar as colunas: nenhuma cópia). Devolve quantos pedaços de memória foram lidos."""
+    a pedaço (sem juntar as colunas: nenhuma cópia). Devolve os pedaços lidos (a contagem por coluna lê os mesmos)."""
     if not columns:
         if first == 0:
             out[:] = row_hash([], df.height, threads=threads)
-        return 0
+        return []
     pieces = _pieces(df, columns)
     parts: list[tuple[int, Part]] = []
     for start, end in pieces:
@@ -764,4 +821,4 @@ def _hash_side(df: pl.DataFrame, columns: Sequence[str], threads: int | None, ou
         frame = import_frame(part)  # todas as colunas numa chamada; senão, coluna a coluna
         parts.append((start, frame if frame is not None else [import_column(part[c]) for c in columns]))
     row_hash_parts(parts, df.height, first_column=first, out=out, threads=threads)
-    return len(pieces)
+    return parts

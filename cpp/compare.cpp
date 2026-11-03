@@ -158,3 +158,61 @@ DC_EXPORT i64 dc_compare_column(const i64* left, const i64* right, const u32* li
   }
   return count;
 }
+
+// k colunas lado a lado, já reunidas nos pares (a linha i da esquerda com a linha i da direita), nas linhas
+// [start, end): differs[c * n + i] = 1 onde a coluna c diverge (igualdade exata, a de cell_equal). É a contagem por
+// coluna das linhas que o hash de linha marcou: uma chamada por janela no lugar de uma `dc_compare_column` (e duas
+// exportações do Polars) por coluna. Devolve 0.
+DC_EXPORT int dc_compare_rows(int k, const i64* left, const i64* right, i64 n, i64 start, i64 end, u8* differs) {
+  Side L = read_side(left, k, n), R = read_side(right, k, n);
+  for (int c = 0; c < k; c++) {
+    const Col &a = L.cols[c], &b = R.cols[c];
+    u8* d = differs + (i64)c * n;
+    for (i64 i = start; i < end; i++) d[i] = cell_equal(a, i, b, i) ? 0 : 1;
+  }
+  return 0;
+}
+
+namespace {
+
+// Um lado da janela em pedaços de memória (um por row group, como o Polars entrega): os descritores de cada pedaço
+// (k colunas cada) e a primeira linha de cada um. `locate` acha o pedaço de uma linha (busca binária: são poucos).
+struct Pieces {
+  std::vector<Side> sides;
+  std::vector<i64> starts;   // p + 1 posições: a primeira linha de cada pedaço e o total
+
+  Pieces(int k, int p, const i64* first, const i64* desc) : starts(first, first + p + 1) {
+    for (int i = 0; i < p; i++) sides.push_back(read_side(desc + (i64)i * k * DESC, k, 0));
+  }
+
+  const Side& locate(i64 row, i64* local) const {
+    size_t lo = 0, hi = sides.size();
+    while (hi - lo > 1) {
+      size_t mid = (lo + hi) / 2;
+      if (starts[mid] <= row) lo = mid; else hi = mid;
+    }
+    *local = row - starts[lo];
+    return sides[lo];
+  }
+};
+
+}  // namespace
+
+// k colunas, igualdade exata, nos pares q em [start, end) de n: o par é p = subset[q] (ou q), as linhas li[p] e ri[p]
+// da janela, que vem em pedaços (pl à esquerda, pr à direita: os descritores de cada pedaço em sequência, pedaço a
+// pedaço, e a primeira linha de cada um mais o total em lstarts/rstarts). differs[c * n + q] = 1 onde a coluna c
+// diverge. É a contagem por coluna dos pares que o hash de linha marcou, direto das colunas da janela (as mesmas que o
+// hash leu), sem reunir as linhas antes no Polars. Devolve 0.
+DC_EXPORT int dc_compare_pairs(int k, int pl, const i64* lstarts, const i64* ldesc, int pr, const i64* rstarts,
+                               const i64* rdesc, const u32* li, const u32* ri, const u32* subset, i64 n, i64 start,
+                               i64 end, u8* differs) {
+  const Pieces L(k, pl, lstarts, ldesc), R(k, pr, rstarts, rdesc);
+  for (i64 q = start; q < end; q++) {
+    const i64 p = subset ? (i64)subset[q] : q;
+    i64 a, b;
+    const Side& x = L.locate(li[p], &a);
+    const Side& y = R.locate(ri[p], &b);
+    for (int c = 0; c < k; c++) differs[(i64)c * n + q] = cell_equal(x.cols[c], a, y.cols[c], b) ? 0 : 1;
+  }
+  return 0;
+}

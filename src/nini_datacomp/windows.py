@@ -190,6 +190,15 @@ class Plan:
     files: tuple[list[tuple[int, ...]] | None, list[tuple[int, ...]] | None] = (None, None)
     column_groups: int = 1  # em quantos grupos de colunas ler cada janela (1 = todas de uma vez)
     column_bytes: dict[str, float] = field(default_factory=dict)  # bytes por linha de cada coluna, os dois lados
+    side_bytes: tuple[dict[str, float], dict[str, float]] = ({}, {})  # o mesmo, de cada lado (a chave inclusive)
+
+    def frame_bytes(self, left: pl.DataFrame, right: pl.DataFrame) -> int:
+        """O tamanho de uma parte lida (os dois lados), pelos bytes por linha do plano: sem o ``estimated_size`` do
+        Polars, que custa alguns ms por janela e segura o GIL."""
+        total = 0.0
+        for frame, sizes in ((left, self.side_bytes[0]), (right, self.side_bytes[1])):
+            total += frame.height * sum(sizes.get(c, 0.0) for c in frame.columns)
+        return int(total)
 
     def split_columns(self, columns: Sequence[str]) -> list[list[str]]:
         """``columns`` em até `column_groups` grupos seguidos (na mesma ordem), de tamanhos parecidos em bytes."""
@@ -229,10 +238,55 @@ def _any_null(keys: Sequence[str]) -> pl.Expr:
     return pl.any_horizontal([pl.col(k).is_null() for k in keys])
 
 
-def _stats(kl: pl.LazyFrame, keys: Sequence[str]) -> tuple[int, bool]:
-    """(linhas, se há chave nula) numa passada pelas colunas da chave, sem guardá-las."""
-    row = kl.select(pl.len().alias("n"), _any_null(keys).any().alias("nulls")).collect(engine="streaming").row(0)
-    return int(row[0]), bool(row[1])
+def _collect(queries: Sequence[pl.LazyFrame | pl.DataFrame]) -> list[pl.DataFrame]:
+    """Várias consultas de uma vez, em paralelo (o planejamento fazia uma depois da outra: em 1M x 50, ~0,14 s). O
+    que já é DataFrame passa direto (um DataFrame grande não é copiado)."""
+    lazy = [q for q in queries if isinstance(q, pl.LazyFrame)]
+    if not lazy:
+        done: list[pl.DataFrame] = []
+    else:
+        try:
+            done = pl.collect_all(lazy, engine="streaming")
+        except TypeError:  # pragma: no cover (Polars sem engine no collect_all)
+            done = pl.collect_all(lazy)
+    out = iter(done)
+    return [next(out) if isinstance(q, pl.LazyFrame) else q for q in queries]
+
+
+def _row_count(source: Source, kl: pl.LazyFrame) -> pl.LazyFrame | pl.DataFrame:
+    """As linhas da fonte: do rodapé dos Parquet (sem ler dados), da memória (DataFrame) ou contando a chave."""
+    if source.is_parquet:
+        return pl.DataFrame({"n": [sum(n for path in source.files for n in row_groups(path))]})
+    if source.frame is not None:
+        return pl.DataFrame({"n": [source.frame.height]})
+    return kl.select(pl.len())
+
+
+# bytes por valor na memória dos tipos de largura fixa: estes não precisam de amostra (a amostra lê o primeiro row
+# group inteiro: em 1M x 50, ~50 ms do planejamento, mesmo com poucas linhas)
+_FIXED = {
+    "Int8": 1, "Int16": 2, "Int32": 4, "Int64": 8, "Int128": 16, "UInt8": 1, "UInt16": 2, "UInt32": 4, "UInt64": 8,
+    "Float32": 4, "Float64": 8, "Date": 4, "Datetime": 8, "Duration": 8, "Time": 8, "Decimal": 16, "Boolean": 0.125,
+    "Null": 0,
+}  # fmt: skip
+
+
+def _fixed_width(dtype: pl.DataType) -> float | None:
+    """Bytes por valor de um tipo de largura fixa (mais 1/8 da validade); None nos outros (texto, Categorical...)."""
+    width = _FIXED.get(dtype.base_type().__name__)
+    return None if width is None else width + 0.125
+
+
+def _sample(source: Source, columns: Sequence[str], sample_rows: int) -> pl.LazyFrame | pl.DataFrame:
+    """O começo da fonte, só nas ``columns`` (as de largura variável), para medir os bytes por linha; de um DataFrame,
+    ele inteiro (já está na memória)."""
+    if source.frame is not None:
+        return source.frame.select(columns)
+    return source.lazy.select(columns).head(sample_rows) if columns else pl.DataFrame()
+
+
+def _variable_columns(source: Source) -> list[str]:
+    return [c for c, t in source.lazy.collect_schema().items() if _fixed_width(t) is None]
 
 
 def _rows_at(kl: pl.LazyFrame, keep: pl.Expr) -> pl.DataFrame:
@@ -241,13 +295,16 @@ def _rows_at(kl: pl.LazyFrame, keep: pl.Expr) -> pl.DataFrame:
     return out.sort("__i")
 
 
-def _bytes_per_row(source: Source, sample_rows: int) -> tuple[float, dict[str, float]]:
-    """Bytes por linha na memória (todas as colunas, e de cada coluna), por uma amostra do começo da fonte."""
-    frame = source.frame if source.frame is not None else source.lazy.head(sample_rows).collect()
-    if not frame.height:
-        return 0.0, {}
-    per_column = {c: frame[c].estimated_size() / frame.height for c in frame.columns}
-    return frame.estimated_size() / frame.height, per_column
+def _bytes_per_row(source: Source, sample: pl.DataFrame) -> tuple[float, dict[str, float]]:
+    """Bytes por linha na memória (todas as colunas, e de cada coluna): pelo tipo nas de largura fixa e pela amostra
+    nas outras."""
+    per_column = {}
+    for c, dtype in source.lazy.collect_schema().items():
+        width = _fixed_width(dtype)
+        if width is None:
+            width = sample[c].estimated_size() / sample.height if sample.height else 0.0
+        per_column[c] = width
+    return sum(per_column.values()), per_column
 
 
 def _row_group_starts(source: Source) -> list[int]:
@@ -280,22 +337,31 @@ def _snap(cuts: list[int], starts: list[int], rows_per_window: int) -> list[int]
     return out
 
 
-def _aligned_bounds(
-    source: Source, kl: pl.LazyFrame, keys: Sequence[str], n: int, rows_per_window: int
-) -> list[tuple[Any, ...]] | None:
-    """Fronteiras no começo de row groups, se a fonte é Parquet gravado em ordem pela chave (senão None).
-
-    Lê só a chave da primeira linha de cada row group: se essas chaves estão em ordem, cada janela começa num row group
-    e o Polars não decodifica nenhum duas vezes. (Uma fonte fora de ordem com os começos em ordem ainda dá janelas
-    corretas, só menos parelhas: a ordem afeta o tamanho das janelas, nunca o resultado.)
-    """
+def _firsts_query(source: Source, kl: pl.LazyFrame) -> pl.LazyFrame | None:
+    """A chave da primeira linha de cada row group (para as fronteiras alinhadas), se a fonte é Parquet com vários.
+    Não depende do tamanho das janelas: vai na mesma rodada de consultas das outras."""
     if not source.is_parquet:
         return None
     starts = _row_group_starts(source)
-    snapped = _snap(list(range(rows_per_window, n, rows_per_window)), starts, rows_per_window)
+    if len(starts) < 2:
+        return None
+    return kl.with_row_index("__i").filter(pl.col("__i").is_in(starts))
+
+
+def _aligned_bounds(
+    source: Source, firsts: pl.DataFrame, keys: Sequence[str], *, n: int, rows_per_window: int, first: int
+) -> list[tuple[Any, ...]] | None:
+    """Fronteiras no começo de row groups, se o Parquet foi gravado em ordem pela chave (senão None).
+
+    Usa só a chave da primeira linha de cada row group: se essas chaves estão em ordem, cada janela começa num row
+    group e o Polars não decodifica nenhum duas vezes. (Uma fonte fora de ordem com os começos em ordem ainda dá
+    janelas corretas, só menos parelhas: a ordem afeta o tamanho das janelas, nunca o resultado.)
+    """
+    starts = _row_group_starts(source)
+    snapped = _snap(_cuts(n, rows_per_window, first), starts, rows_per_window)
     if not snapped:
         return None
-    firsts = _rows_at(kl, pl.col("__i").is_in(starts))
+    firsts = firsts.sort("__i")
     keyed = firsts.select(keys)
     if keyed.height != len(starts) or not keyed.equals(keyed.sort(list(keys))):
         return None
@@ -303,11 +369,18 @@ def _aligned_bounds(
     return [tuple(at[s]) for s in snapped]
 
 
-def _sampled_bounds(kl: pl.LazyFrame, keys: Sequence[str], n: int, rows_per_window: int) -> list[tuple[Any, ...]]:
+def _cuts(n: int, rows_per_window: int, first: int) -> list[int]:
+    """Onde cortar ``n`` linhas: a primeira janela com ``first`` linhas, as outras com ``rows_per_window``."""
+    return list(range(first, n, rows_per_window)) if first < n else []
+
+
+def _sampled_bounds(
+    kl: pl.LazyFrame, keys: Sequence[str], n: int, rows_per_window: int, first: int
+) -> list[tuple[Any, ...]]:
     """Fronteiras pelos quantis de uma amostra regular das chaves não nulas (no máximo ~SAMPLE_KEYS chaves)."""
     step = max(1, n // SAMPLE_KEYS)
     sample = _rows_at(kl, (pl.col("__i") % step == 0) & ~_any_null(keys)).select(keys).sort(list(keys))
-    positions = [round(c / step) for c in range(rows_per_window, n, rows_per_window)]
+    positions = [round(c / step) for c in _cuts(n, rows_per_window, first)]
     return [tuple(row) for row in sample[[p for p in positions if p < sample.height]].iter_rows()]
 
 
@@ -342,17 +415,21 @@ def _window_size(
 FileRange = tuple[Any, Any, bool]  # (menor e maior valor da 1ª coluna da chave, se tem chave nula) de um arquivo
 
 
-def _file_ranges(source: Source, keys: Sequence[str]) -> list[FileRange] | None:
-    """A faixa da 1ª coluna da chave em cada arquivo Parquet da fonte (uma passada só pela chave), ou None se a fonte
-    não tem vários arquivos."""
+def _range_queries(source: Source, keys: Sequence[str]) -> list[pl.LazyFrame]:
+    """A faixa da 1ª coluna da chave em cada arquivo Parquet da fonte (uma consulta por arquivo), se ela tem vários."""
     if len(source.files) < 2:
-        return None
+        return []
     schema = source.lazy.collect_schema()
     first = pl.col(keys[0])
     if isinstance(schema[keys[0]], (pl.Categorical, pl.Enum)):
         first = first.cast(pl.String)
     aggs = [first.min().alias("lo"), first.max().alias("hi"), _any_null(keys).any().alias("nulls")]
-    frames = pl.collect_all([source.scan([f]).select(aggs) for f in source.files])
+    return [source.scan([f]).select(aggs) for f in source.files]
+
+
+def _file_ranges(frames: Sequence[pl.DataFrame]) -> list[FileRange] | None:
+    if not frames:
+        return None
     return [(df["lo"][0], df["hi"][0], bool(df["nulls"][0])) for df in frames]
 
 
@@ -392,32 +469,50 @@ def plan_windows(
         raise ValueError("a chave precisa de ao menos uma coluna")
     budget = parse_memory_limit(memory_limit)
     kl, kr = _key_lazy(left, keys), _key_lazy(right, keys)
-    (nl, null_l), (nr, null_r) = _stats(kl, keys), _stats(kr, keys)
-    (bl, cl), (br, cr) = _bytes_per_row(left, sample_rows), _bytes_per_row(right, sample_rows)
+    # uma rodada só de consultas, em paralelo: a amostra de cada lado, se há chave nula, as linhas, a chave no começo
+    # de cada row group e a faixa de chaves de cada arquivo (nada disso depende do tamanho das janelas)
+    firsts_q = [_firsts_query(left, kl), _firsts_query(right, kr)]
+    ranges_q = [_range_queries(left, keys), _range_queries(right, keys)]
+    got = iter(_collect([
+        _sample(left, _variable_columns(left), sample_rows), _sample(right, _variable_columns(right), sample_rows),
+        kl.select(_any_null(keys).any()), kr.select(_any_null(keys).any()), _row_count(left, kl),
+        _row_count(right, kr), *[q for q in firsts_q if q is not None], *ranges_q[0], *ranges_q[1],
+    ]))  # fmt: skip
+    sample_l, sample_r, null_l, null_r, count_l, count_r = (next(got) for _ in range(6))
+    firsts = [None if q is None else next(got) for q in firsts_q]
+    ranges = [_file_ranges([next(got) for _ in q]) for q in ranges_q]
+    (bl, cl), (br, cr) = _bytes_per_row(left, sample_l), _bytes_per_row(right, sample_r)
+    nl, nr = int(count_l.item()), int(count_r.item())
+    null_l, null_r = bool(null_l.item()), bool(null_r.item())
     bpr = (bl, br)
     column_bytes = {c: cl.get(c, 0.0) + cr.get(c, 0.0) for c in {*cl, *cr} if c not in keys}
     rows_per_window, groups, notes = _window_size(
         left, right, bpr, budget, window_rows=window_rows, columns=len(column_bytes)
     )
     rows = (nl, nr)
-    extra = {"column_groups": groups, "column_bytes": column_bytes}
+    extra = {"column_groups": groups, "column_bytes": column_bytes, "side_bytes": (cl, cr)}
     single = Plan([Window(0, with_nulls=True)], rows_per_window, budget, bpr, rows, "left", notes=notes, **extra)
     if max(rows) <= rows_per_window:
         return single
 
+    # todas as janelas do mesmo tamanho (testado na fase 5: a primeira com metade das linhas não diminuiu a espera pela
+    # leitura, que é o gargalo em todas, e só acrescentou uma janela)
+    head = rows_per_window
     # a base é o lado com mais linhas, preferindo um Parquet em ordem sem chave nula (fronteiras nos row groups)
-    sides = sorted([("left", left, kl, nl, null_l), ("right", right, kr, nr, null_r)], key=lambda s: -s[3])
+    sides = sorted(
+        [("left", left, kl, nl, null_l, firsts[0]), ("right", right, kr, nr, null_r, firsts[1])], key=lambda s: -s[3]
+    )
     bounds: list[tuple[Any, ...]] | None = None
     base_name, aligned = sides[0][0], False
-    for name, source, lazy, n, nulls in sides:
-        if n > rows_per_window and not nulls:
-            bounds = _aligned_bounds(source, lazy, keys, n, rows_per_window)
+    for name, source, _, n, nulls, first in sides:
+        if n > rows_per_window and not nulls and first is not None:
+            bounds = _aligned_bounds(source, first, keys, n=n, rows_per_window=rows_per_window, first=head)
             if bounds:
                 base_name, aligned = name, True
                 break
     if not bounds:
-        _, _, lazy, n, _ = sides[0]
-        bounds = _sampled_bounds(lazy, keys, n, rows_per_window)
+        _, _, lazy, n, _, _ = sides[0]
+        bounds = _sampled_bounds(lazy, keys, n, rows_per_window, head)
     unique: list[tuple[Any, ...]] = []
     for b in bounds:
         if not unique or b != unique[-1]:  # chave repetida: a mesma fronteira uma vez só
@@ -431,5 +526,5 @@ def plan_windows(
     windows.append(Window(len(unique), unique[-1], None))
     if not aligned:
         notes.append("fronteiras por amostra das chaves (fora do começo dos row groups)")
-    files = (_window_files(_file_ranges(left, keys), windows), _window_files(_file_ranges(right, keys), windows))
+    files = (_window_files(ranges[0], windows), _window_files(ranges[1], windows))
     return Plan(windows, rows_per_window, budget, bpr, rows, base_name, aligned, notes, files, **extra)

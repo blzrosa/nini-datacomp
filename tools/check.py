@@ -4,15 +4,19 @@
     uv run python tools/check.py --fix              # o lint também corrige o que der (ruff check --fix)
     uv run python tools/check.py --then bench_hash  # se tudo passar, roda tools/bench_hash.py
     uv run python tools/check.py --then bench_baseline bench_rows bench_hash -- --runs 3
+    uv run python tools/check.py --then diag_profile "bench_hash --cases 1000000x50"   # argumentos de cada uma
 
 Etapas: ``ruff format .``, ``ruff check .``, ``pyright``, ``pytest`` e, com ``--then``, as ferramentas pedidas (os
 argumentos depois de ``--`` vão para elas). Cada etapa roda com o Python do ambiente (``python -m ...``), então
-``uv run`` recompila o C++ uma vez só, antes de tudo, se algum .cpp mudou. No fim, um resumo com o tempo de cada etapa.
+``uv run`` recompila o C++ uma vez só, antes de tudo, se algum .cpp mudou. Uma ferramenta entre aspas leva os
+próprios argumentos (``"bench_hash --cases 1000000x50"``) no lugar dos de ``--``. No fim, um resumo com o tempo de
+cada etapa.
 """
 
 from __future__ import annotations
 
 import argparse
+import shlex
 import subprocess
 import sys
 import time
@@ -30,11 +34,12 @@ def _steps(fix: bool, then: list[str], extra: list[str]) -> list[tuple[str, list
         ("pytest", [*py, "pytest"]),
     ]
     for tool in then:
-        name = tool.removesuffix(".py")
+        name, *own = shlex.split(tool, posix=True)
+        name = Path(name).name.removesuffix(".py")  # aceita "bench_hash", "bench_hash.py" e "tools/bench_hash.py"
         script = ROOT / "tools" / f"{name}.py"
         if not script.exists():
             raise SystemExit(f"ferramenta não encontrada: tools/{name}.py")
-        steps.append((name, [sys.executable, str(script), *extra]))
+        steps.append((name, [sys.executable, str(script), *(own or extra)]))
     return steps
 
 

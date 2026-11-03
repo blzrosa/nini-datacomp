@@ -19,10 +19,10 @@ from typing import Literal
 import numpy as np
 
 from .._native import lib, ptr
-from .arrow import Column
+from .arrow import Column, FrameColumns
 from .memory import empty
 
-__all__ = ["Alignment", "Strategy", "align_keys", "descriptor", "key_kind"]
+__all__ = ["Alignment", "Strategy", "align_frames", "align_keys", "descriptor", "key_kind"]
 
 Strategy = Literal["auto", "merge", "hash"]
 _STRATEGIES = {"auto": 0, "merge": 1, "hash": 2}
@@ -103,13 +103,35 @@ def align_keys(left: Sequence[Column], right: Sequence[Column], strategy: Strate
 
     ldesc, lkeep = descriptor(left)
     rdesc, rkeep = descriptor(right)
+    out = _align(ldesc, nl, rdesc, nr, strategy)
+    del lkeep, rkeep  # vivos até aqui: o kernel leu os endereços de texto deles
+    return out
+
+
+def align_frames(left: FrameColumns, right: FrameColumns, strategy: Strategy = "auto") -> Alignment:
+    """O mesmo que `align_keys`, com as colunas da chave de cada lado lidas de uma vez (`import_frame`): uma
+    exportação do Polars por lado, em vez de uma por coluna."""
+    if not len(left) or len(left) != len(right):
+        raise ValueError("a chave precisa das mesmas colunas (ao menos uma) nos dois lados")
+    if strategy not in _STRATEGIES:
+        raise ValueError(f"estratégia desconhecida: {strategy!r} (use 'auto', 'merge' ou 'hash')")
+    for c in range(len(left)):
+        if not np.array_equal(left.desc[c, :2], right.desc[c, :2]):
+            raise ValueError(f"coluna da chave {left.names[c]!r}: tipos diferentes nos dois lados")
+    if max(left.length, right.length) > MAX_ROWS:
+        raise ValueError(f"janela grande demais: {max(left.length, right.length):,} linhas (máximo {MAX_ROWS:,})")
+    out = _align(left.desc, left.length, right.desc, right.length, strategy)
+    del left, right  # os buffers (owner) vivos até aqui
+    return out
+
+
+def _align(ldesc: np.ndarray, nl: int, rdesc: np.ndarray, nr: int, strategy: Strategy) -> Alignment:
     cap = max(min(nl, nr), 1)
     li, ri = empty(cap, np.uint32), empty(cap, np.uint32)
     out = np.zeros(_N_STATS, np.int64)
     code = lib().dc_align_keys(
-        len(left), ptr(ldesc), nl, ptr(rdesc), nr, _STRATEGIES[strategy], ptr(li), ptr(ri), ptr(out)
+        int(ldesc.shape[0]), ptr(ldesc), nl, ptr(rdesc), nr, _STRATEGIES[strategy], ptr(li), ptr(ri), ptr(out)
     )
-    del lkeep, rkeep  # vivos até aqui: o kernel leu os endereços de texto deles
     if code != 0:  # pragma: no cover (as validações acima pegam antes)
         raise RuntimeError(f"dc_align_keys falhou (código {code})")
     common, only_l, only_r, dup_l, dup_r, used, pairs = (int(x) for x in out)

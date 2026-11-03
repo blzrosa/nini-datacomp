@@ -4,6 +4,24 @@ Formato: [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/); versões: 
 
 ## [Não lançado]
 
+## [0.1.0] — 2026-11-03
+
+Primeira versão: a reescrita do datacompolars 0.4.4 com a comparação em kernels C++.
+
+- `dc.compare(left, right, on, ...)` com `CompareOptions` e `ComparisonResult`: o mesmo resultado do datacompolars
+  (contagens, divergências por coluna e amostras, conferidos contra ele em 21 casos de borda), com os nomes da
+  tabela de migração do README.
+- Comparação por janelas pela chave, dentro de um `memory_limit`: todos os casos da grade (1M e 10M linhas x 10, 50
+  e 300 colunas) ficam abaixo de 1 GB, onde o datacompolars chegava a quase 2 GB.
+- Igualdade exata pelo hash de linha (`verify_hash=True` confere célula a célula); tolerâncias, `ignore_case` e
+  `ignore_whitespace` coluna a coluna, com a aritmética do Polars.
+- Relatório em texto, Markdown, HTML e JSON (`result.report`).
+- Desempenho (caminho exato, `memory_limit="1GB"`): de 0,66x a 1,05x o tempo do datacompolars, e 10M x 50 em 1,20x
+  (inconclusivo: o IC de 1,05 a 1,35 passa de 1,10, mas não fica inteiro acima). Nenhum caso mais lento.
+- Wheels para Linux, Windows e macOS (x86-64 e ARM64), Python 3.10 a 3.14, sem pyarrow.
+
+O histórico abaixo, fase a fase, é o do desenvolvimento.
+
 ### Fase 0a — fundação
 - Biblioteca C++ (`datacomp.dll` / `libdatacomp.so` / `.dylib`) com ABI em C de prefixo `dc_`, versão de ABI conferida
   no carregamento (`DC_ABI_VERSION`) e assinaturas do ctypes geradas dos `.cpp` (`tools/gen_bindings.py`).
@@ -230,4 +248,34 @@ Formato: [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/); versões: 
 - README: uso e a tabela de migração do datacompolars.
 - Versão `0.1.0rc1` para o TestPyPI; o teste do TestPyPI nas máquinas limpas agora roda uma comparação de verdade e
   o relatório nos quatro formatos.
+
+### Fase 5a — desempenho (antes da 0.1.0)
+- Planejamento das janelas: as linhas de um Parquet saem do rodapé (sem ler dados) e as consultas que restam (a
+  amostra de cada lado para os bytes por linha, as chaves nulas, a chave no começo de cada row group) rodam juntas,
+  em paralelo, em vez de uma depois da outra (em 1M x 50, o planejamento levava ~0,14 s de 0,59 s).
+- `tools/diag_profile.py`: o cProfile de uma comparação pela API, com as etapas de cada execução.
+- O planejamento faz uma rodada só de consultas ao Polars: a chave no começo de cada row group e a faixa de chaves
+  de cada arquivo não dependem do tamanho das janelas e vão junto com a amostra, as chaves nulas e as linhas.
+- As colunas da chave de cada janela numa exportação só do Polars por lado (`align_frames`), em vez de uma por
+  coluna.
+- Amostras montadas a partir de listas do Python (uma conversão por lado), em vez de indexar uma Series do Polars por
+  valor (cada indexação passa por uma consulta).
+- `tools/check.py --then "bench_hash --cases 1000000x50" diag_profile`: cada ferramenta entre aspas leva os próprios
+  argumentos.
+- Resultado (fase 2, caminho exato, `memory_limit="1GB"`): 1M x 50 de 1,39x para 1,05x (ok) e o pico de 801 para
+  724 MiB; 1M x 10 0,81x, 1M x 300 0,81x, 10M x 10 0,96x, 10M x 300 0,66x (32,9 s), todos ok; 10M x 50 1,20x,
+  inconclusivo. Contagens certas em todos, também no caminho coluna a coluna (fase 3).
+- Bytes por linha: os tipos de largura fixa (inteiros, reais, datas, Decimal, booleano) pelo tipo; só as colunas de
+  largura variável (texto, Categorical) vão para a amostra. A amostra lia o primeiro row group inteiro de todas as
+  colunas: em 1M x 50, ~50 ms dos ~80 ms do planejamento.
+- `execution.window_bytes` pelos bytes por linha do plano, sem o `estimated_size` do Polars (alguns ms por janela,
+  segurando o GIL enquanto a comparação roda).
+- Contagem por coluna nos pares divergentes: `dc_compare_pairs` (ABI 8) compara todas as colunas numa chamada,
+  lendo direto dos pedaços de memória da janela que o hash de linha já leu (sem reunir as linhas no Polars, cujas
+  threads estão ocupadas lendo a janela seguinte); antes, eram uma `dc_compare_column` e duas exportações do Polars
+  por coluna (em 1M x 50, ~0,12 s por comparação). `dc_compare_rows` (`compare_frames`) faz o mesmo com as linhas
+  já reunidas.
+- Amostras: os pares divergentes vão para a ordem da chave uma vez por janela, e as amostras de cada coluna saem das
+  linhas já reunidas para a contagem (as primeiras em que ela diverge); antes, um `select`, um `sort` e um `head` do
+  Polars por coluna (em 1M x 50 com `samples=5`, ~0,13 s).
 

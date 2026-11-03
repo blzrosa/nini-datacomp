@@ -17,8 +17,8 @@ import pytest
 import make_golden
 from cases import CASES
 from nini_datacomp import UnsupportedTypeError
-from nini_datacomp.core.arrow import import_column
-from nini_datacomp.core.keys import Alignment, align_keys, key_kind
+from nini_datacomp.core.arrow import import_column, import_frame
+from nini_datacomp.core.keys import Alignment, align_frames, align_keys, key_kind
 
 STRATEGIES = ("auto", "merge", "hash")
 
@@ -197,3 +197,27 @@ def test_golden_row_counts(case: Any) -> None:
             continue
         rows = golden["rows"]
         assert (a.common, a.only_left, a.only_right) == (rows["common"], rows["left_only"], rows["right_only"])
+
+
+@pytest.mark.parametrize("strategy", ["auto", "merge", "hash"])
+def test_align_frames_matches_align_keys(strategy: Any) -> None:
+    """`align_frames` (a chave de cada lado numa exportação só) dá o mesmo que `align_keys` (coluna a coluna)."""
+    rng = random.Random(9)
+    left = pl.DataFrame({"a": [rng.randint(0, 50) for _ in range(500)], "b": [rng.choice("xyz") for _ in range(500)]})
+    right = pl.DataFrame({"a": [rng.randint(0, 50) for _ in range(400)], "b": [rng.choice("xyz") for _ in range(400)]})
+    left, right = left.unique(maintain_order=True), right.unique(maintain_order=True)
+    lf, rf = import_frame(left), import_frame(right)
+    assert lf is not None
+    assert rf is not None
+    got = align_frames(lf, rf, strategy)
+    want = align_keys(
+        [import_column(left[c]) for c in left.columns], [import_column(right[c]) for c in right.columns], strategy
+    )
+    assert (got.common, got.only_left, got.only_right) == (want.common, want.only_left, want.only_right)
+    assert got.strategy == want.strategy
+    pairs = sorted(zip(got.left.tolist(), got.right.tolist(), strict=True))
+    assert pairs == sorted(zip(want.left.tolist(), want.right.tolist(), strict=True))
+    bad = import_frame(right.with_columns(pl.col("a").cast(pl.Int32)))
+    assert bad is not None
+    with pytest.raises(ValueError, match="tipos diferentes"):
+        align_frames(lf, bad)

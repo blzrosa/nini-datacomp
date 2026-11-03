@@ -11,17 +11,18 @@ posições nos vetores de pares), como os que o hash de linha marcou como diverg
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
 import polars as pl
 
 from .._native import lib, ptr
-from .arrow import Column
+from .arrow import Column, FrameColumns, import_column, import_frame
 from .blocks import Block, map_blocks, split
 from .keys import descriptor, key_kind
 
-__all__ = ["Tolerance", "compare_column", "tolerance_for"]
+__all__ = ["Tolerance", "compare_column", "compare_frames", "compare_pairs", "tolerance_for"]
 
 
 @dataclass(frozen=True)
@@ -97,3 +98,106 @@ def compare_column(
     count = sum(map_blocks(run, split(todo), threads))
     del lkeep, rkeep
     return differs, count
+
+
+def compare_frames(left: pl.DataFrame, right: pl.DataFrame, *, threads: int | None = None) -> np.ndarray:
+    """Igualdade exata, coluna a coluna, da linha i de ``left`` com a linha i de ``right`` (as linhas dos pares já
+    reunidas, mesmas colunas e tipos nos dois). Devolve ``differs`` (uint8, colunas x linhas): 1 onde diverge.
+
+    Os dois lados numa exportação só do Polars cada e uma chamada ao C++ (``dc_compare_rows``), em vez de uma
+    `compare_column` por coluna; se um lado não exporta assim, coluna a coluna.
+    """
+    k, n = left.width, left.height
+    if right.width != k or right.height != n:
+        raise ValueError("left e right precisam das mesmas colunas e linhas")
+    differs = np.zeros((k, n), np.uint8)
+    if k == 0 or n == 0:
+        return differs
+    lf, rf = import_frame(left), import_frame(right)
+    if lf is not None and rf is not None:
+        if not np.array_equal(lf.desc[:, :2], rf.desc[:, :2]):  # tipo e largura de cada coluna
+            raise ValueError("left e right têm colunas de tipos diferentes")
+        dc = lib()
+        fixed = (k, ptr(lf.desc), ptr(rf.desc), n)
+
+        def run(b: Block) -> int:
+            return int(dc.dc_compare_rows(*fixed, b.start, b.start + b.rows, ptr(differs)))
+
+        map_blocks(run, split(n), threads)
+        del lf, rf
+        return differs
+    rows = np.arange(n, dtype=np.uint32)
+    for j in range(k):
+        compare_column(
+            import_column(left.to_series(j)), import_column(right.to_series(j)), rows, rows, differs=differs[j],
+            threads=threads,
+        )  # fmt: skip
+    return differs
+
+
+Pieces = Sequence[tuple[int, Sequence[Column] | FrameColumns]]  # (primeira linha, colunas do pedaço), como no hash
+
+
+def _stack(pieces: Pieces, k: int) -> tuple[np.ndarray, np.ndarray, list[object]]:
+    """(primeira linha de cada pedaço mais o total, descritores de todos os pedaços em sequência, o que os mantém
+    vivos)."""
+    starts: list[int] = []
+    descs: list[np.ndarray] = [np.zeros((0, 6), np.int64)]
+    keep: list[object] = []
+    end = 0
+    for start, part in pieces:
+        if isinstance(part, FrameColumns):
+            desc, rows = part.desc, part.length
+            keep.append(part)
+        else:
+            desc, texts = descriptor(part)
+            keep.append(texts)
+            rows = part[0].length if part else 0
+        if desc.shape[0] != k:
+            raise ValueError(f"um pedaço tem {desc.shape[0]} colunas, não {k}")
+        starts.append(start)
+        descs.append(desc)
+        end = start + rows
+    starts.append(end)
+    return np.asarray(starts, np.int64), np.ascontiguousarray(np.concatenate(descs), np.int64), keep
+
+
+def compare_pairs(
+    left: Pieces,
+    right: Pieces,
+    left_rows: np.ndarray,
+    right_rows: np.ndarray,
+    *,
+    columns: int,
+    subset: np.ndarray | None = None,
+    threads: int | None = None,
+) -> np.ndarray:
+    """Igualdade exata das ``columns`` colunas nos pares ``(left_rows[p], right_rows[p])`` (só os de ``subset``, se
+    vier), lendo as colunas direto dos pedaços da janela (os mesmos que o hash de linha leu: `_hash_side`), sem reunir
+    as linhas no Polars antes. Devolve ``differs`` (uint8, colunas x pares de ``subset``): 1 onde diverge."""
+    li, ri = np.ascontiguousarray(left_rows, np.uint32), np.ascontiguousarray(right_rows, np.uint32)
+    sub = None if subset is None else np.ascontiguousarray(subset, np.uint32)
+    n = int(li.size if sub is None else sub.size)
+    differs = np.zeros((columns, n), np.uint8)
+    if columns == 0 or n == 0:
+        return differs
+    lstarts, ldesc, lkeep = _stack(left, columns)
+    rstarts, rdesc, rkeep = _stack(right, columns)
+    if not np.array_equal(ldesc[:columns, :2], rdesc[:columns, :2]):  # tipo e largura de cada coluna
+        raise ValueError("left e right têm colunas de tipos diferentes")
+    p = li if sub is None else li[sub]
+    q = ri if sub is None else ri[sub]
+    if int(p.max()) >= int(lstarts[-1]) or int(q.max()) >= int(rstarts[-1]):
+        raise ValueError("índice de linha fora da janela")
+    dc = lib()
+    fixed = (
+        columns, len(left), ptr(lstarts), ptr(ldesc), len(right), ptr(rstarts), ptr(rdesc), ptr(li), ptr(ri),
+        0 if sub is None else ptr(sub), n,
+    )  # fmt: skip
+
+    def run(b: Block) -> int:
+        return int(dc.dc_compare_pairs(*fixed, b.start, b.start + b.rows, ptr(differs)))
+
+    map_blocks(run, split(n), threads)
+    del lkeep, rkeep
+    return differs
