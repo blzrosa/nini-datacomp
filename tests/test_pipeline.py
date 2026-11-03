@@ -215,8 +215,7 @@ def test_compare_rows_key_cast_and_nested() -> None:
         compare_rows(left, right, ["id"])
     assert compare_rows(left, right, ["id"], casting="right").mismatched == 1
     nested = pl.DataFrame({"id": [1], "l": [[1, 2]]})
-    with pytest.raises(UnsupportedTypeError, match="aninhadas"):
-        compare_rows(nested, nested, ["id"])
+    assert compare_rows(nested, nested, ["id"]).mismatched == 0  # aninhadas: pelo hash do valor (fase 6b)
 
 
 def test_chunked_windows_are_hashed_without_copies() -> None:

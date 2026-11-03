@@ -45,8 +45,8 @@ def compare(
 
     As opções vêm em ``options`` (`CompareOptions`) ou como argumentos nomeados (``abs_tol=0.01``); com os dois, os
     argumentos nomeados ganham. Erros fatais (chave que falta, de tipos diferentes, repetida) não levantam exceção:
-    ficam em ``result.errors``, com ``result.aborted`` verdadeiro. Tipos que o pacote não compara (List, Struct)
-    levantam `UnsupportedTypeError`.
+    ficam em ``result.errors``, com ``result.aborted`` verdadeiro. List, Array e Struct são comparados pelo valor
+    inteiro (as listas de ``unordered_lists``, sem a ordem dos elementos).
     """
     t0 = time.perf_counter()
     if kwargs:
@@ -95,8 +95,11 @@ def _compare(
     if errors:
         return _failed(opts, keys, errors, left_only=left_only, right_only=right_only, t0=t0)
 
-    cols = align_columns(ls, rs, keys, opts.cast)  # schemas só; UnsupportedTypeError para aninhadas
+    cols = align_columns(ls, rs, keys, opts.cast)  # schemas só
+    unordered = [c.lower() for c in opts.unordered_lists] if lower else list(opts.unordered_lists)
     warnings: list[str] = []
+    if unknown_lists := sorted(set(unordered) - {c for c in cols.compared if isinstance(lschema[c], pl.List)}):
+        warnings.append(f"unordered_lists names columns that are not compared lists: {unknown_lists}")
     if not cols.compared:
         warnings.append("No common columns besides the join key: only row membership was compared.")
     for label, tol in (("abs_tol", abs_tol), ("rel_tol", rel_tol)):
@@ -108,6 +111,7 @@ def _compare(
         prefetch=True, engine="auto", hashing=True, casting=opts.cast, verify_hash=opts.verify_hash,
         threads=opts.threads, abs_tol=abs_tol, rel_tol=rel_tol, ignore_case=opts.ignore_case,
         ignore_spaces=opts.ignore_whitespace, details=opts.details, samples=opts.samples, sources=(ls, rs),
+        unordered_lists=unordered, only_common_keys=opts.only_common_keys,
     )  # fmt: skip
     if res.dup_left:
         errors.append(f"Duplicate join keys in the left table: {res.dup_left:,} surplus rows")

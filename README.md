@@ -164,13 +164,19 @@ SAMPLE DIFFERING ROWS
 | `window_rows` | `None` | avançado: linhas por janela, no lugar do cálculo pelo `memory_limit` |
 | `threads` | `None` | threads dos kernels C++ (padrão: todos os núcleos) |
 | `verify_hash` | `False` | confere as colunas exatas célula a célula em todos os pares, além do hash |
+| `unordered_lists` | `()` | colunas List comparadas sem a ordem dos elementos (`[1, 2]` = `[2, 1]`) |
+| `only_common_keys` | `False` | tabelas com faixas de chave muito diferentes: só a faixa que os dois lados têm é lida por inteiro; o resto só é contado (mesmo resultado) |
+| `read` | `ReadOptions()` | como ler os arquivos (veja [Formatos](#formatos)) |
 
 Uma opção com nome errado é erro (`extra="forbid"`), em vez de ser ignorada.
 
 ### Tipos
 
 Inteiros, reais, booleano, texto (String, e Categorical e Enum comparados como texto), Date, Datetime, Duration,
-Time e Decimal. List e Struct ainda não: uma coluna de tipo não suportado levanta `UnsupportedTypeError`.
+Time e Decimal, e os aninhados (List, Array e Struct), comparados pelo valor inteiro: `[1, 2]` e `[2, 1]` são
+diferentes, a não ser que a coluna esteja em `unordered_lists`; tolerâncias e as opções de texto não entram nos
+campos de dentro. Os aninhados vão pelo hash do valor (o `Expr.hash` do Polars, 64 bits), como as outras colunas
+exatas.
 
 ## Desempenho
 
@@ -217,7 +223,8 @@ Mesma semântica; mudam os nomes, e o que era ajuste interno do motor vira um or
 | `column_details`, `sample_count` | `details`, `samples` | |
 | `window_rows`, `cache_windows`, `prefetch_windows`, `columns_per_batch` | `memory_limit="auto"` (+ `window_rows`) | o motor escolhe janelas e grupos de colunas pelo orçamento; `"auto"` = 1/4 da RAM livre, até 2 GB |
 | — | `threads`, `verify_hash` | threads dos kernels C++; conferir o hash de linha célula a célula |
-| `common_keys_only` | — | fase 6 |
+| `common_keys_only` | `only_common_keys` | mesmo resultado, só mais barato com faixas de chave muito diferentes |
+| List comparada sem ordem (sempre) | `unordered_lists=[...]` | **muda o padrão**: as listas são comparadas com a ordem, a não ser as de `unordered_lists` |
 | `custom_comparators` | — | fase 6 |
 | `SourceOptions` | `read=ReadOptions(...)` | também um por lado; o SAS sem o extra `[sas]` (o ReadStat vem compilado) |
 | `result.fatal_errors` | `result.errors` | |

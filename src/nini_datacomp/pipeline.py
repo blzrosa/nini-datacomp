@@ -15,7 +15,7 @@ from __future__ import annotations
 import threading
 import time
 from collections import defaultdict
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Collection, Iterator, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from itertools import pairwise
@@ -29,7 +29,6 @@ from .core.compare import Tolerance, compare_column, compare_pairs, tolerance_fo
 from .core.keys import Alignment, align_frames, align_keys, align_pieces
 from .core.memory import empty
 from .core.rowhash import Part, diff_pairs, row_hash, row_hash_parts
-from .errors import UnsupportedTypeError
 from .io import Source, SourceLike, open_source
 from .windows import Plan, Window, plan_windows
 
@@ -327,9 +326,6 @@ def align_columns(
                 continue
         if not is_key and (wanted is None or name in wanted):
             compared.append(name)
-    nested = [c for c in compared if lcasts.get(c, ls[c]).is_nested()]
-    if nested:
-        raise UnsupportedTypeError(f"colunas aninhadas (List, Struct, Array) ainda não são comparadas: {nested}")
     return Columns(compared, mismatches, lcasts, rcasts)
 
 
@@ -390,6 +386,53 @@ def _normalize_text(
         names[c] = NORMALIZED + c if keep_original else c
         exprs.append(e.alias(names[c]))
     return (src.with_columns(exprs) if exprs else src), names
+
+
+NESTED = "__dc_nested__"  # prefixo das colunas aninhadas trocadas pelo hash do valor, lidas junto
+_NESTED_SEED = 0x6E696E69  # semente do hash do Polars nas colunas aninhadas (a mesma nos dois lados)
+
+
+def _nested_as_hash(
+    src: Source, columns: Sequence[str], *, unordered: Collection[str], keep_original: bool
+) -> tuple[Source, dict[str, str]]:
+    """List, Array e Struct comparados pelo hash do valor inteiro (``Expr.hash`` do Polars, UInt64; nulo continua
+    nulo), que segue pelos mesmos kernels das outras colunas. Nas listas de ``unordered``, os elementos são ordenados
+    antes ([1, 2] = [2, 1]). Como em `_normalize_text`, com ``keep_original`` o hash vai numa coluna nova ao lado (as
+    amostras mostram o valor de verdade)."""
+    schema = src.lazy.collect_schema()
+    exprs, names = [], {}
+    for c in columns:
+        dtype = schema[c]
+        if not dtype.is_nested():
+            continue
+        value = pl.col(c)
+        if c in unordered and isinstance(dtype, pl.List):
+            value = value.list.eval(pl.element().sort())
+        hashed = pl.when(pl.col(c).is_null()).then(pl.lit(None, pl.UInt64)).otherwise(value.hash(seed=_NESTED_SEED))
+        names[c] = NESTED + c if keep_original else c
+        exprs.append(hashed.alias(names[c]))
+    return (src.with_columns(exprs) if exprs else src), names
+
+
+def _restrict_to_overlap(
+    ls: Source, rs: Source, key: str, dtype: pl.DataType
+) -> tuple[Source, Source, tuple[int, int]]:
+    """``only_common_keys``: só as linhas com a 1ª coluna da chave dentro da faixa que os dois lados têm (e as de
+    chave nula, que se casam entre si) seguem para as janelas; as de fora não têm par e só são contadas, lendo só a
+    chave. Devolve as fontes filtradas e quantas linhas ficaram de fora em cada lado. Tipos sem ordem: nada muda."""
+    if not (dtype.is_numeric() or dtype.is_temporal() or dtype in (pl.String, pl.Boolean)):
+        return ls, rs, (0, 0)
+    k = pl.col(key)
+    lo_hi = [s.lazy.select(k.min().alias("lo"), k.max().alias("hi")) for s in (ls, rs)]
+    (lmin, lmax), (rmin, rmax) = (tuple(f.row(0)) for f in pl.collect_all(lo_hi))
+    if None in (lmin, lmax, rmin, rmax):  # um lado sem chave não nula: nenhuma tem par
+        inside = k.is_null()
+    else:
+        lo, hi = max(lmin, rmin), min(lmax, rmax)
+        inside = k.is_null() | (k.is_between(pl.lit(lo, dtype), pl.lit(hi, dtype)) if lo <= hi else pl.lit(False))
+    counts = pl.collect_all([s.lazy.select((~inside).sum().alias("n")) for s in (ls, rs)])
+    outside = (int(counts[0].item() or 0), int(counts[1].item() or 0))
+    return ls.filter(inside), rs.filter(inside), outside
 
 
 def count_rows(
@@ -469,6 +512,8 @@ def _run(
     details: bool = True,
     samples: int = 0,
     sources: tuple[Source, Source] | None = None,
+    unordered_lists: Collection[str] = (),
+    only_common_keys: bool = False,
 ) -> RowCounts:
     t0 = time.perf_counter()
     keys = list(on)
@@ -476,13 +521,17 @@ def _run(
     names: dict[str, str] = {}
     if hashing:
         cols = align_columns(ls, rs, keys, casting, columns)
-        text = {"ignore_case": ignore_case, "ignore_spaces": ignore_spaces, "keep_original": details and samples > 0}
-        ls, rs, tolerances, names = _prepare_columns(ls, rs, cols, abs_tol=abs_tol, rel_tol=rel_tol, text=text)
+        keep = details and samples > 0
+        text = {"ignore_case": ignore_case, "ignore_spaces": ignore_spaces, "keep_original": keep}
+        ls, rs, tolerances, names = _prepare_columns(
+            ls, rs, cols, abs_tol=abs_tol, rel_tol=rel_tol, text=text, unordered=unordered_lists
+        )
         read = cols.compared
     else:
         cols, tolerances = None, {}
         read = list(columns) if columns is not None else _common_names(ls, rs)
     ls, rs, dtypes = prepare_keys(ls, rs, keys)
+    ls, rs, outside = _restrict_to_overlap(ls, rs, keys[0], dtypes[0]) if only_common_keys else (ls, rs, (0, 0))
     t = time.perf_counter()
     setup_s = t - t0  # abrir as fontes, alinhar os schemas, as conversões de tipo
     plan = plan_windows(ls, rs, keys, memory_limit, window_rows=window_rows)
@@ -531,11 +580,11 @@ def _run(
     timings = _timings({"setup": setup_s, "plan": plan_s, **spent, **reader.timer.seconds}, t0)
     aborted = bool(totals["dup_left"] or totals["dup_right"])
     return RowCounts(
-        left_total=totals["left"],
-        right_total=totals["right"],
+        left_total=totals["left"] + outside[0],
+        right_total=totals["right"] + outside[1],
         common=0 if aborted else totals["common"],
-        left_only=0 if aborted else totals["only_left"],
-        right_only=0 if aborted else totals["only_right"],
+        left_only=0 if aborted else totals["only_left"] + outside[0],
+        right_only=0 if aborted else totals["only_right"] + outside[1],
         dup_left=totals["dup_left"],
         dup_right=totals["dup_right"],
         windows=len(plan.windows),
@@ -563,15 +612,26 @@ def _common_names(ls: Source, rs: Source) -> list[str]:
 
 
 def _prepare_columns(
-    ls: Source, rs: Source, cols: Columns, *, abs_tol: Tol, rel_tol: Tol, text: dict[str, bool]
+    ls: Source,
+    rs: Source,
+    cols: Columns,
+    *,
+    abs_tol: Tol,
+    rel_tol: Tol,
+    text: dict[str, bool],
+    unordered: Collection[str] = (),
 ) -> tuple[Source, Source, dict[str, Tolerance], dict[str, str]]:
-    """As conversões das colunas comparadas (casting, dicionário para texto, opções de texto), as tolerâncias e o
-    nome da coluna que cada uma compara (o texto normalizado, se houver)."""
+    """As conversões das colunas comparadas (casting, dicionário para texto, opções de texto, aninhadas pelo hash),
+    as tolerâncias e o nome da coluna que cada uma compara (o texto normalizado ou o hash, se houver)."""
     ls, rs = _with_casts(ls, cols.left_casts), _with_casts(rs, cols.right_casts)
     ls, rs = _dictionary_as_text(ls, cols.compared), _dictionary_as_text(rs, cols.compared)
+    tolerances = _tolerances(ls, cols.compared, abs_tol, rel_tol)  # antes do hash: ele vira UInt64 (numérico)
     ls, names = _normalize_text(ls, cols.compared, **text)
     rs, _ = _normalize_text(rs, cols.compared, **text)
-    return ls, rs, _tolerances(ls, cols.compared, abs_tol, rel_tol), names
+    keep = text.get("keep_original", False)
+    ls, nested = _nested_as_hash(ls, cols.compared, unordered=unordered, keep_original=keep)
+    rs, _ = _nested_as_hash(rs, cols.compared, unordered=unordered, keep_original=keep)
+    return ls, rs, tolerances, names | nested
 
 
 def _count(a: Alignment, nl: int, nr: int, totals: dict[str, int], strategies: dict[str, int]) -> bool:

@@ -20,10 +20,19 @@ import polars as pl
 from ._native import lib, ptr
 from .readers import DEFAULT_STAGE_BYTES, SUFFIXES, FileFormat, ReadOptions, Staged, format_of, stage
 
-__all__ = ["KeyStats", "Source", "SourceLike", "key_stats", "open_source", "row_groups"]
+__all__ = ["KeyStats", "Source", "SourceLike", "Where", "key_stats", "open_source", "row_groups"]
 
 SourceLike = str | Path | pl.DataFrame | pl.LazyFrame
-Step = tuple[pl.Expr, ...] | dict[str, str]  # um with_columns ou uma renomeação
+
+
+@dataclass(frozen=True)
+class Where:
+    """Um filtro de linhas (`Source.filter`)."""
+
+    predicate: pl.Expr
+
+
+Step = tuple[pl.Expr, ...] | dict[str, str] | Where  # um with_columns, uma renomeação ou um filtro
 _PARQUET = (".parquet", ".pq")
 _GLOB = set("*?[")
 _MAGIC = b"PAR1"
@@ -58,12 +67,22 @@ class Source:
         frame = self.frame.rename(mapping) if self.frame is not None else None
         return replace(self, lazy=self.lazy.rename(mapping), frame=frame, steps=(*self.steps, mapping))
 
+    def filter(self, predicate: pl.Expr) -> Source:
+        """A mesma fonte só com as linhas de ``predicate`` (também em toda leitura de `scan`)."""
+        frame = self.frame.filter(predicate) if self.frame is not None else None
+        return replace(self, lazy=self.lazy.filter(predicate), frame=frame, steps=(*self.steps, Where(predicate)))
+
     def scan(self, files: Sequence[Path]) -> pl.LazyFrame:
         """Só alguns dos arquivos Parquet da fonte, com as mesmas conversões: uma janela que cai em poucos arquivos
         não faz o Polars abrir o rodapé de todos (com 300 colunas, ~1 ms cada, a cada janela)."""
         lf = _scan([str(f) for f in files])
         for step in self.steps:
-            lf = lf.rename(step) if isinstance(step, dict) else lf.with_columns(step)
+            if isinstance(step, dict):
+                lf = lf.rename(step)
+            elif isinstance(step, Where):
+                lf = lf.filter(step.predicate)
+            else:
+                lf = lf.with_columns(step)
         return lf
 
     def cleanup(self) -> None:

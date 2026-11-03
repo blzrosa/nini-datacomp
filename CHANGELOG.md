@@ -4,6 +4,16 @@ Formato: [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/); versões: 
 
 ## [Não lançado]
 
+### Fase 6b — aninhados e chaves em comum
+- Colunas List, Array e Struct comparadas pelo valor inteiro, pelo hash do valor (`Expr.hash` do Polars, UInt64;
+  nulo continua nulo), que segue pelos mesmos kernels das outras colunas exatas; as amostras mostram o valor de
+  verdade. Antes, `UnsupportedTypeError`.
+- `unordered_lists=[...]`: essas listas são comparadas sem a ordem dos elementos (ordenados antes do hash). **Muda o
+  padrão do datacompolars**, que comparava toda List sem ordem: aqui, sem a opção, a ordem conta.
+- `only_common_keys=True` (o `common_keys_only` do datacompolars): só as linhas com a 1ª coluna da chave dentro da
+  faixa que os dois lados têm (e as de chave nula) são lidas por inteiro; as de fora só são contadas, numa leitura só
+  da chave. Mesmo resultado, supondo chaves únicas fora da faixa.
+
 ## [0.2.0] — 2026-11-03
 
 ### Fase 6a — formatos

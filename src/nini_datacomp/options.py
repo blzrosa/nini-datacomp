@@ -67,6 +67,21 @@ class CompareOptions(BaseModel):
         default=False,
         description="Confere as colunas exatas célula a célula em todos os pares (o hash de linha nunca decide só).",
     )
+    unordered_lists: tuple[str, ...] = Field(
+        default=(),
+        description=(
+            "Colunas List comparadas sem considerar a ordem dos elementos ([1, 2] = [2, 1]); as outras listas são "
+            "comparadas com a ordem (no datacompolars, todas eram sem ordem)."
+        ),
+    )
+    only_common_keys: bool = Field(
+        default=False,
+        description=(
+            "Para tabelas com faixas de chave muito diferentes: só as linhas com a 1ª coluna da chave dentro da faixa "
+            "que os dois lados têm são lidas por inteiro; as de fora só são contadas (lendo só a chave). O resultado é "
+            "o mesmo, supondo chaves únicas fora da faixa (lá elas não são conferidas)."
+        ),
+    )
     read: ReadOptions | tuple[ReadOptions, ReadOptions] = Field(
         default_factory=ReadOptions,
         description=(

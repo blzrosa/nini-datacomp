@@ -34,7 +34,7 @@ from typing import Any
 
 import polars as pl
 
-from .io import KeyStats, Source, key_stats, row_groups
+from .io import KeyStats, Source, Where, key_stats, row_groups
 
 __all__ = ["MIN_MEMORY", "Plan", "Window", "parse_memory_limit", "plan_windows"]
 
@@ -479,6 +479,8 @@ def _source_name(source: Source, column: str) -> str | None:
     for step in reversed(source.steps):
         if isinstance(step, dict):
             name = next((old for old, new in step.items() if new == name), name)
+            continue
+        if isinstance(step, Where):  # um filtro não muda os valores da coluna (as estatísticas continuam valendo)
             continue
         for expr in step:
             try:
