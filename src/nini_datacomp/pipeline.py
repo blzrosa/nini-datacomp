@@ -266,7 +266,11 @@ class RowCounts:
     column_groups: int = 1  # em quantos grupos de colunas cada janela foi lida
     compared_columns: tuple[str, ...] = ()
     column_mismatches: dict[str, int] = field(default_factory=dict)  # divergências por coluna comparada
+    # até `samples` linhas divergentes por coluna, na ordem da chave: as colunas da chave ("__k0", "__k1", ...), o
+    # valor à esquerda ("__left") e o à direita ("__right"), com os tipos de verdade
+    samples: dict[str, pl.DataFrame] = field(default_factory=dict)
     type_mismatches: tuple[tuple[str, str, str], ...] = ()  # (coluna, tipo à esquerda, tipo à direita): não comparadas
+    tolerance_columns: tuple[str, ...] = ()  # as comparadas com tolerância (coluna a coluna, fora do hash de linha)
 
     @property
     def aborted(self) -> bool:
@@ -360,13 +364,22 @@ def _tolerances(src: Source, columns: Sequence[str], abs_tol: Tol, rel_tol: Tol)
     return out
 
 
-def _normalize_text(src: Source, columns: Sequence[str], *, ignore_case: bool, ignore_spaces: bool) -> Source:
+NORMALIZED = "__dc_text__"  # prefixo das colunas de texto normalizadas (ignore_case/ignore_spaces) lidas junto
+
+
+def _normalize_text(
+    src: Source, columns: Sequence[str], *, ignore_case: bool, ignore_spaces: bool, keep_original: bool
+) -> tuple[Source, dict[str, str]]:
     """Texto em minúsculas e/ou sem espaços, com as mesmas expressões do datacompolars (o resultado bate com o
-    dele em qualquer texto, inclusive Unicode); a comparação depois é exata (e vai pelo hash de linha)."""
+    dele em qualquer texto, inclusive Unicode); a comparação depois é exata (e vai pelo hash de linha).
+
+    Devolve a fonte e, para cada coluna normalizada, o nome da coluna com o texto normalizado: com
+    ``keep_original`` (as amostras mostram o valor de verdade), uma coluna nova ao lado; senão, a própria coluna.
+    """
     if not (ignore_case or ignore_spaces):
-        return src
+        return src, {}
     schema = src.lazy.collect_schema()
-    exprs = []
+    exprs, names = [], {}
     for c in columns:
         if schema[c] != pl.String:
             continue
@@ -375,8 +388,9 @@ def _normalize_text(src: Source, columns: Sequence[str], *, ignore_case: bool, i
             e = e.str.to_lowercase()
         if ignore_spaces:
             e = e.str.replace_all(r"\s+", "")
-        exprs.append(e.alias(c))
-    return src.with_columns(exprs) if exprs else src
+        names[c] = NORMALIZED + c if keep_original else c
+        exprs.append(e.alias(names[c]))
+    return (src.with_columns(exprs) if exprs else src), names
 
 
 def count_rows(
@@ -453,15 +467,18 @@ def _run(
     rel_tol: Tol = 0.0,
     ignore_case: bool = False,
     ignore_spaces: bool = False,
+    details: bool = True,
+    samples: int = 0,
+    sources: tuple[Source, Source] | None = None,
 ) -> RowCounts:
     t0 = time.perf_counter()
     keys = list(on)
-    ls, rs = open_source(left), open_source(right)
+    ls, rs = sources if sources is not None else (open_source(left), open_source(right))
+    names: dict[str, str] = {}
     if hashing:
         cols = align_columns(ls, rs, keys, casting, columns)
-        ls, rs, tolerances = _prepare_columns(
-            ls, rs, cols, abs_tol=abs_tol, rel_tol=rel_tol, ignore_case=ignore_case, ignore_spaces=ignore_spaces
-        )
+        text = {"ignore_case": ignore_case, "ignore_spaces": ignore_spaces, "keep_original": details and samples > 0}
+        ls, rs, tolerances, names = _prepare_columns(ls, rs, cols, abs_tol=abs_tol, rel_tol=rel_tol, text=text)
         read = cols.compared
     else:
         cols, tolerances = None, {}
@@ -473,8 +490,10 @@ def _run(
     plan_s = time.perf_counter() - t
 
     groups = plan.split_columns(read) if cols is not None else None
+    # o que cada grupo lê: a coluna e, se o texto foi normalizado ao lado, a normalizada
+    reads = None if groups is None else [[n for c in g for n in dict.fromkeys((c, names.get(c, c)))] for g in groups]
     reader = WindowReader(
-        ls, rs, plan, keys, dtypes, columns_left=read, columns_right=read, groups=groups, prefetch=prefetch,
+        ls, rs, plan, keys, dtypes, columns_left=read, columns_right=read, groups=reads, prefetch=prefetch,
         engine=engine,
     )  # fmt: skip
     totals: dict[str, int] = defaultdict(int)
@@ -483,6 +502,10 @@ def _run(
     state: _WindowState | None = None
     heights = (0, 0)
     col_counts: dict[str, int] = dict.fromkeys(cols.compared if cols is not None else (), 0)
+    ctx = _Context(
+        keys=keys, tolerances=tolerances, names=names, counts=col_counts, details=details, samples=samples,
+        verify=verify_hash, threads=threads, spent=spent,
+    )  # fmt: skip
     for _, g, lf, rf in reader.pieces():
         t = time.perf_counter()
         if g == 0:  # a primeira parte da janela: alinha as chaves (todas as partes trazem as mesmas linhas)
@@ -490,16 +513,13 @@ def _run(
             t = _lap(spent, "align", t)
             aborted = _count(a, lf.height, rf.height, totals, strategies)
             hashing_now = groups is not None and not aborted and a.left.size > 0
-            state = _WindowState(a) if hashing_now else None
+            state = _WindowState(a, ctx) if hashing_now else None
             heights = (lf.height, rf.height)
         if state is not None:
             assert groups is not None
             if (lf.height, rf.height) != heights:  # pragma: no cover (o Polars mudou a ordem das linhas?)
                 raise RuntimeError("os grupos de colunas de uma janela vieram com linhas diferentes")
-            totals["pieces"] += state.add(
-                lf, rf, groups[g], tolerances=tolerances, counts=col_counts, verify=verify_hash, threads=threads,
-                spent=spent, t=t,
-            )  # fmt: skip
+            totals["pieces"] += state.add(lf, rf, groups[g], t)
             if g == len(groups) - 1:
                 mismatched, collisions = state.finish()
                 totals["mismatched"] += mismatched
@@ -509,12 +529,7 @@ def _run(
         # continua viva pela variável do laço (três partes em memória, não duas; medido: ~+200 MB em 10M linhas)
         del lf, rf
 
-    timings = {"setup": setup_s, "plan": plan_s, **spent, **reader.timer.seconds}
-    total = time.perf_counter() - t0
-    # o que nenhuma etapa mediu (laço, Python, a leitura em paralelo disputando o processador); "read_background" não
-    # entra na conta: corre em paralelo com as outras
-    measured = sum(v for k, v in timings.items() if k != "read_background")
-    timings |= {"other": max(0.0, total - measured), "total": total}
+    timings = _timings({"setup": setup_s, "plan": plan_s, **spent, **reader.timer.seconds}, t0)
     aborted = bool(totals["dup_left"] or totals["dup_right"])
     return RowCounts(
         left_total=totals["left"],
@@ -536,8 +551,10 @@ def _run(
         hash_pieces=totals["pieces"],
         column_groups=1 if groups is None else len(groups),
         compared_columns=() if cols is None else tuple(cols.compared),
-        column_mismatches={} if cols is None or aborted else col_counts,
+        column_mismatches={} if cols is None or aborted or not details else col_counts,
+        samples={} if aborted else {c: pl.concat(frames) for c, frames in ctx.found.items() if frames},
         type_mismatches=() if cols is None else tuple(cols.type_mismatches),
+        tolerance_columns=tuple(tolerances),
     )
 
 
@@ -547,14 +564,15 @@ def _common_names(ls: Source, rs: Source) -> list[str]:
 
 
 def _prepare_columns(
-    ls: Source, rs: Source, cols: Columns, *, abs_tol: Tol, rel_tol: Tol, ignore_case: bool, ignore_spaces: bool
-) -> tuple[Source, Source, dict[str, Tolerance]]:
-    """As conversões das colunas comparadas (casting, dicionário para texto, opções de texto) e as tolerâncias."""
+    ls: Source, rs: Source, cols: Columns, *, abs_tol: Tol, rel_tol: Tol, text: dict[str, bool]
+) -> tuple[Source, Source, dict[str, Tolerance], dict[str, str]]:
+    """As conversões das colunas comparadas (casting, dicionário para texto, opções de texto), as tolerâncias e o
+    nome da coluna que cada uma compara (o texto normalizado, se houver)."""
     ls, rs = _with_casts(ls, cols.left_casts), _with_casts(rs, cols.right_casts)
     ls, rs = _dictionary_as_text(ls, cols.compared), _dictionary_as_text(rs, cols.compared)
-    ls = _normalize_text(ls, cols.compared, ignore_case=ignore_case, ignore_spaces=ignore_spaces)
-    rs = _normalize_text(rs, cols.compared, ignore_case=ignore_case, ignore_spaces=ignore_spaces)
-    return ls, rs, _tolerances(ls, cols.compared, abs_tol, rel_tol)
+    ls, names = _normalize_text(ls, cols.compared, **text)
+    rs, _ = _normalize_text(rs, cols.compared, **text)
+    return ls, rs, _tolerances(ls, cols.compared, abs_tol, rel_tol), names
 
 
 def _count(a: Alignment, nl: int, nr: int, totals: dict[str, int], strategies: dict[str, int]) -> bool:
@@ -567,117 +585,157 @@ def _count(a: Alignment, nl: int, nr: int, totals: dict[str, int], strategies: d
     return bool(totals["dup_left"] or totals["dup_right"])
 
 
+def _timings(timings: dict[str, float], t0: float) -> dict[str, float]:
+    """As etapas, mais ``other`` (o que nenhuma etapa mediu: laço, Python, a leitura em paralelo disputando o
+    processador) e ``total``. "read_background" não entra na conta: corre em paralelo com as outras."""
+    total = time.perf_counter() - t0
+    measured = sum(v for k, v in timings.items() if k != "read_background")
+    return timings | {"other": max(0.0, total - measured), "total": total}
+
+
 def _lap(spent: dict[str, float], name: str, since: float) -> float:
     now = time.perf_counter()
     spent[name] += now - since
     return now
 
 
+def sample_key_names(n: int) -> list[str]:
+    """Os nomes das colunas da chave nas amostras de `RowCounts.samples`."""
+    return [f"__k{i}" for i in range(n)]
+
+
+@dataclass
+class _Context:
+    """O que vale para todas as janelas de uma comparação (e onde elas somam os resultados)."""
+
+    keys: list[str]
+    tolerances: Mapping[str, Tolerance]
+    names: Mapping[str, str]  # coluna comparada -> coluna com os dados comparados (o texto normalizado)
+    counts: dict[str, int]
+    details: bool
+    samples: int
+    verify: bool
+    threads: int | None
+    spent: dict[str, float]
+    found: dict[str, list[pl.DataFrame]] = field(default_factory=dict)
+
+    def data(self, column: str) -> str:
+        return self.names.get(column, column)
+
+    def missing_samples(self, column: str) -> int:
+        return self.samples - sum(f.height for f in self.found.get(column, ()))
+
+    def wants_samples(self, column: str) -> bool:
+        return self.details and self.missing_samples(column) > 0
+
+
 class _WindowState:
-    """Uma janela, grupo de colunas a grupo: um byte por par (1 = a linha diverge em alguma coluna) e as contagens por
-    coluna.
+    """Uma janela, grupo de colunas a grupo: um byte por par (1 = a linha diverge em alguma coluna), as contagens por
+    coluna e as amostras.
 
     Em cada grupo: as colunas exatas pelo hash de linha (só os pares de hash diferente divergem) e, nesses pares, a
     contagem coluna a coluna (as linhas deles são poucas: um ``gather`` do Polars e ``dc_compare_column``); as colunas
     com tolerância, uma a uma, em todos os pares. Com ``verify``, as exatas também são conferidas em todos os pares.
     """
 
-    def __init__(self, a: Alignment) -> None:
-        self.a = a
+    def __init__(self, a: Alignment, ctx: _Context) -> None:
+        self.a, self.ctx = a, ctx
         self.bad = np.zeros(a.left.size, np.uint8)
         self.collisions = 0
 
-    def add(
-        self,
-        lf: pl.DataFrame,
-        rf: pl.DataFrame,
-        columns: Sequence[str],
-        *,
-        tolerances: Mapping[str, Tolerance],
-        counts: dict[str, int],
-        verify: bool,
-        threads: int | None,
-        spent: dict[str, float],
-        t: float,
-    ) -> int:
-        """Compara um grupo de colunas (somando em ``counts``); devolve quantos pedaços de memória o hash leu."""
-        exact = [c for c in columns if c not in tolerances]
+    def add(self, lf: pl.DataFrame, rf: pl.DataFrame, columns: Sequence[str], t: float) -> int:
+        """Compara um grupo de colunas; devolve quantos pedaços de memória o hash leu."""
+        ctx = self.ctx
+        exact = [c for c in columns if c not in ctx.tolerances]
         pieces = 0
         if exact:
+            data = [ctx.data(c) for c in exact]
             hl, hr = empty(lf.height, np.uint64), empty(rf.height, np.uint64)
-            pieces = _hash_side(lf, exact, threads, hl, 0) + _hash_side(rf, exact, threads, hr, 0)
-            t = _lap(spent, "hash", t)
-            d = diff_pairs([], [], hl, hr, left_rows=self.a.left, right_rows=self.a.right, threads=threads)
+            pieces = _hash_side(lf, data, ctx.threads, hl, 0) + _hash_side(rf, data, ctx.threads, hr, 0)
+            t = _lap(ctx.spent, "hash", t)
+            d = diff_pairs([], [], hl, hr, left_rows=self.a.left, right_rows=self.a.right, threads=ctx.threads)
             del hl, hr
-            t = _lap(spent, "diff", t)
-            if verify:
-                t = self._verify(lf, rf, exact, hashed=d.pairs, counts=counts, threads=threads, spent=spent, t=t)
+            t = _lap(ctx.spent, "diff", t)
+            if ctx.verify:
+                t = self._verify(lf, rf, exact, d.pairs, t)
             else:
                 self.bad[d.pairs] = 1
-                t = self._count_exact(lf, rf, exact, pairs=d.pairs, counts=counts, threads=threads, spent=spent, t=t)
+                if ctx.details:
+                    t = self._count_exact(lf, rf, exact, d.pairs, t)
         for c in columns:
-            if c in tolerances:  # em todos os pares: a coluna inteira dos dois lados (juntando os pedaços: uma cópia)
+            # com tolerância: em todos os pares, a coluna inteira dos dois lados (juntando os pedaços: uma cópia)
+            if c in ctx.tolerances:
                 differs, n = compare_column(
-                    import_column(lf[c]), import_column(rf[c]), self.a.left, self.a.right, tolerance=tolerances[c],
-                    threads=threads,
+                    import_column(lf[c]), import_column(rf[c]), self.a.left, self.a.right, tolerance=ctx.tolerances[c],
+                    threads=ctx.threads,
                 )  # fmt: skip
                 self.bad |= differs
-                counts[c] += n
-        _lap(spent, "tolerance", t)
+                ctx.counts[c] += n
+                if n and ctx.wants_samples(c):
+                    self._sample(lf, rf, c, np.flatnonzero(differs))
+        _lap(ctx.spent, "tolerance", t)
         return pieces
 
     def _count_exact(
-        self,
-        lf: pl.DataFrame,
-        rf: pl.DataFrame,
-        columns: Sequence[str],
-        *,
-        pairs: np.ndarray,
-        counts: dict[str, int],
-        threads: int | None,
-        spent: dict[str, float],
-        t: float,
+        self, lf: pl.DataFrame, rf: pl.DataFrame, columns: Sequence[str], pairs: np.ndarray, t: float
     ) -> float:
         """Divergências por coluna, só nos pares divergentes (poucos): as linhas deles lado a lado, coluna a coluna."""
         if not pairs.size:
             return t
+        ctx = self.ctx
         li, ri = pl.Series(self.a.left[pairs]), pl.Series(self.a.right[pairs])
-        left = lf.select([pl.col(c).gather(li) for c in columns])
-        right = rf.select([pl.col(c).gather(ri) for c in columns])
+        left = lf.select([pl.col(ctx.data(c)).gather(li) for c in columns])
+        right = rf.select([pl.col(ctx.data(c)).gather(ri) for c in columns])
         same = np.arange(pairs.size, dtype=np.uint32)
         for c in columns:
-            _, n = compare_column(import_column(left[c]), import_column(right[c]), same, same, threads=threads)
-            counts[c] += n
-        return _lap(spent, "columns", t)
+            differs, n = compare_column(
+                import_column(left[ctx.data(c)]), import_column(right[ctx.data(c)]), same, same, threads=ctx.threads
+            )
+            ctx.counts[c] += n
+            if n and ctx.wants_samples(c):
+                self._sample(lf, rf, c, pairs[np.flatnonzero(differs)])
+        return _lap(ctx.spent, "columns", t)
 
     def _verify(
-        self,
-        lf: pl.DataFrame,
-        rf: pl.DataFrame,
-        columns: Sequence[str],
-        *,
-        hashed: np.ndarray,
-        counts: dict[str, int],
-        threads: int | None,
-        spent: dict[str, float],
-        t: float,
+        self, lf: pl.DataFrame, rf: pl.DataFrame, columns: Sequence[str], hashed: np.ndarray, t: float
     ) -> float:
         """Confere as colunas exatas célula a célula em todos os pares; colisões = divergentes que o hash não viu."""
+        ctx = self.ctx
         truly = np.zeros(self.a.left.size, np.uint8)
         for c in columns:
-            _, n = compare_column(
-                import_column(lf[c]), import_column(rf[c]), self.a.left, self.a.right, differs=truly, threads=threads
+            differs, n = compare_column(
+                import_column(lf[ctx.data(c)]),
+                import_column(rf[ctx.data(c)]),
+                self.a.left,
+                self.a.right,
+                threads=ctx.threads,
             )  # cada coluna inteira (fora de ordem: juntando os pedaços)
-            counts[c] += n
+            truly |= differs
+            if ctx.details:
+                ctx.counts[c] += n
+                if n and ctx.wants_samples(c):
+                    self._sample(lf, rf, c, np.flatnonzero(differs))
         seen = np.zeros(self.a.left.size, np.uint8)
         seen[hashed] = 1
         self.collisions += int(np.count_nonzero(truly & ~seen.astype(bool)))
         self.bad |= truly
-        return _lap(spent, "verify", t)
+        return _lap(ctx.spent, "verify", t)
 
     def finish(self) -> tuple[int, int]:
-        """(linhas divergentes, colisões do hash achadas pelo verify) da janela."""
+        """(linhas divergentes, colisões do hash) da janela, depois do último grupo de colunas."""
         return int(np.count_nonzero(self.bad)), self.collisions
+
+    def _sample(self, lf: pl.DataFrame, rf: pl.DataFrame, column: str, pairs: np.ndarray) -> None:
+        """As primeiras linhas divergentes da coluna nesta janela, na ordem da chave (as janelas vêm em ordem)."""
+        ctx = self.ctx
+        need = ctx.missing_samples(column)
+        li, ri = pl.Series(self.a.left[pairs]), pl.Series(self.a.right[pairs])
+        keys = sample_key_names(len(ctx.keys))
+        frame = lf.select(
+            *[pl.col(k).gather(li).alias(n) for k, n in zip(ctx.keys, keys, strict=True)],
+            pl.col(column).gather(li).alias("__left"),
+        ).with_columns(rf[column].gather(ri).alias("__right"))
+        ctx.found.setdefault(column, []).append(frame.sort(keys, nulls_last=False).head(need))
 
 
 def _pieces(df: pl.DataFrame, columns: Sequence[str]) -> list[tuple[int, int]]:

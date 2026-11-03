@@ -202,3 +202,21 @@ Formato: [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/); versões: 
   (0,57x o columnwise do datacompolars, 805 MiB); 1M x 50, 1M x 300, 10M x 10 e 10M x 50 `ok`; 1M x 10
   inconclusivo (1,17x). Um pico de 10M x 50 passou o limite em 1% (964 MiB): `SAFETY` = 0,65.
 
+### Fase 4a — API pública
+- `dc.compare(left, right, on, options=None, **kwargs)`: a função pública. As opções em `CompareOptions` (pydantic,
+  `extra="forbid"`) ou como argumentos nomeados; com os dois, os nomeados ganham.
+- `CompareOptions`: `names`, `case_sensitive_columns`, `cast`, `abs_tol`/`rel_tol` (número ou por coluna),
+  `ignore_whitespace`, `ignore_case`, `details`, `samples`, `memory_limit`, `window_rows`, `threads`, `verify_hash`.
+- `ComparisonResult` (dataclasses imutáveis): `rows`, `columns` como mapeamento por nome (`result.columns["v"]`, com
+  `mismatches`, `rate`, `dtype`, `tolerance` e as amostras em `pl.DataFrame`), `columns.mismatched()` na ordem do
+  datacompolars, `errors`, `warnings`, `execution`, `is_match`, `aborted`, `to_dict()`/`to_json()`.
+- Amostras: as primeiras `samples` linhas divergentes de cada coluna, na ordem da chave, com cabeçalhos
+  `[*chave, "<coluna> (<esquerda>)", "<coluna> (<direita>)"]`, como no datacompolars. Com `ignore_case`/
+  `ignore_whitespace`, o texto normalizado é lido ao lado do original e as amostras mostram o valor de verdade.
+- Erros fatais no resultado, não em exceção (como no datacompolars): chave que falta, chave de tipos diferentes sem
+  `cast`, chave repetida, nomes que colidem em minúsculas. Avisos: nenhuma coluna além da chave; tolerância por coluna
+  com nome que não é comparado.
+- Chave repetida sempre aborta: não há `check_unique_keys=False` (o plano previa). A checagem sai de graça do
+  alinhamento das chaves, e desligá-la só serviria para contagens infladas.
+- Testes: os 21 gabaritos pela API, inclusive as amostras valor a valor, com uma janela e com janelas de 2 linhas.
+

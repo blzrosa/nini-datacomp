@@ -8,7 +8,7 @@ fase 6 (``ReadOptions``).
 from __future__ import annotations
 
 import glob
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -20,6 +20,7 @@ from ._native import lib, ptr
 __all__ = ["Source", "SourceLike", "open_source", "row_groups"]
 
 SourceLike = str | Path | pl.DataFrame | pl.LazyFrame
+Step = tuple[pl.Expr, ...] | dict[str, str]  # um with_columns ou uma renomeação
 _PARQUET = (".parquet", ".pq")
 _GLOB = set("*?[")
 _MAGIC = b"PAR1"
@@ -32,7 +33,8 @@ class Source:
     lazy: pl.LazyFrame
     files: tuple[Path, ...] = ()
     frame: pl.DataFrame | None = None  # a fonte já em memória (DataFrame), se for o caso
-    steps: tuple[tuple[pl.Expr, ...], ...] = ()  # os with_columns aplicados depois de ler (conversões de tipo)
+    # o que se aplica depois de ler (em toda leitura de `scan`): with_columns (conversões de tipo) e renomeações
+    steps: tuple[Step, ...] = ()
 
     @property
     def is_parquet(self) -> bool:
@@ -44,12 +46,20 @@ class Source:
         frame = self.frame.with_columns(exprs) if self.frame is not None else None
         return Source(self.lazy.with_columns(exprs), self.files, frame, (*self.steps, exprs))
 
+    def rename(self, mapping: Mapping[str, str]) -> Source:
+        """A mesma fonte com colunas renomeadas (também em toda leitura de `scan`)."""
+        mapping = dict(mapping)
+        if not mapping:
+            return self
+        frame = self.frame.rename(mapping) if self.frame is not None else None
+        return Source(self.lazy.rename(mapping), self.files, frame, (*self.steps, mapping))
+
     def scan(self, files: Sequence[Path]) -> pl.LazyFrame:
         """Só alguns dos arquivos Parquet da fonte, com as mesmas conversões: uma janela que cai em poucos arquivos
         não faz o Polars abrir o rodapé de todos (com 300 colunas, ~1 ms cada, a cada janela)."""
         lf = pl.scan_parquet([str(f) for f in files])
-        for exprs in self.steps:
-            lf = lf.with_columns(exprs)
+        for step in self.steps:
+            lf = lf.rename(step) if isinstance(step, dict) else lf.with_columns(step)
         return lf
 
 

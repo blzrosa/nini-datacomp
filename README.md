@@ -3,8 +3,21 @@
 Comparação de tabelas em escala: a reescrita do [datacompolars](https://github.com/blzrosa/datacompolars) com a
 comparação em kernels C++, que leem as colunas do Polars sem cópia (interface C do Arrow, sem pyarrow).
 
-> **Em construção (fase 0).** Ainda não há `compare`: este repositório tem só a fundação (biblioteca C++, ABI,
-> memória, leitura de colunas). Para comparar tabelas hoje, use o datacompolars.
+> **Em construção (fase 4).** A API já compara; o relatório e a publicação no PyPI fecham a 0.1.0.
+
+```python
+import nini_datacomp as dc  # antes do Polars (veja Memória)
+
+result = dc.compare(
+    "sas/tops_adm.parquet",  # caminho, glob, pasta, pl.DataFrame ou pl.LazyFrame
+    "lake/tops_adm/",
+    on=["id", "competencia"],
+    abs_tol={"valor": 0.005},
+    memory_limit="2GB",
+)
+result.is_match, result.rows.mismatched, result.columns["valor"].mismatches
+result.columns["valor"].samples  # pl.DataFrame: chave, valor (left), valor (right)
+```
 
 ## Memória
 
