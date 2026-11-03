@@ -38,23 +38,19 @@ def test_golden_row_counts(case: Any, window_rows: int | None) -> None:
     assert got == want
 
 
-EXACT = {"join_columns", "casting"}  # sem tolerância nem opção de texto: o caminho exato (hash) do datacompolars
+SETTINGS = {"casting", "abs_tol", "rel_tol", "ignore_case", "ignore_spaces"}  # as do datacompolars que valem aqui
 
 
 @pytest.mark.parametrize("window_rows", [None, 2])
 @pytest.mark.parametrize("case", CASES, ids=lambda c: c.name)
 def test_golden_mismatched_rows(case: Any, window_rows: int | None) -> None:
-    """Linhas divergentes, colunas comparadas e tipos divergentes iguais aos do gabarito, nos casos de igualdade exata
-    (os com tolerância ou opção de texto são da fase 3)."""
-    if not set(case.settings) <= EXACT:
-        pytest.skip("tolerância ou opção de texto: fase 3")
+    """Linhas divergentes, divergências por coluna, colunas comparadas e tipos divergentes iguais aos do gabarito, com
+    uma janela e com janelas de 2 linhas (inclusive tolerâncias e opções de texto)."""
     golden = json.loads((make_golden.GOLDEN / f"{case.name}.json").read_text(encoding="utf-8"))
     left, right = case.build()
+    options = {k: v for k, v in case.settings.items() if k in SETTINGS}
     try:
-        res = compare_rows(
-            left, right, case.settings["join_columns"], casting=case.settings.get("casting", "none"),
-            window_rows=window_rows,
-        )  # fmt: skip
+        res = compare_rows(left, right, case.settings["join_columns"], window_rows=window_rows, **options)
     except UnsupportedTypeError as e:
         if "Decimal" in str(e) or "dec" in str(e):  # o Polars 1.30 não exporta Decimal (veja test_arrow)
             pytest.skip(f"Decimal não exportado pelo Polars {pl.__version__}")
@@ -65,13 +61,15 @@ def test_golden_mismatched_rows(case: Any, window_rows: int | None) -> None:
         return
     assert res.mismatched == golden["rows"]["mismatched"]
     assert res.equal == golden["rows"]["common"] - golden["rows"]["mismatched"]
+    # o datacompolars lista só as colunas com divergência; o nini-datacomp lista todas as comparadas (as outras com 0)
+    assert {c: n for c, n in res.column_mismatches.items() if n} == golden["column_mismatches"]
+    assert set(res.column_mismatches) == set(res.compared_columns)
     assert list(res.compared_columns) == golden["columns"]["compared"]
     got = [[c, make_golden._type_name(a), make_golden._type_name(b)] for c, a, b in res.type_mismatches]
     assert got == golden["columns"]["type_mismatches"]
-    verified = compare_rows(
-        left, right, case.settings["join_columns"], casting=case.settings.get("casting", "none"), verify_hash=True
-    )
+    verified = compare_rows(left, right, case.settings["join_columns"], verify_hash=True, **options)
     assert verified.mismatched == res.mismatched
+    assert verified.column_mismatches == res.column_mismatches
     assert verified.hash_collisions == 0
 
 
@@ -179,7 +177,9 @@ def test_mismatched_rows_on_the_dataset(dataset: Path, window_rows: int | None) 
     _check(res, dataset)
     assert res.mismatched == exp.mismatched
     assert res.equal == exp.common - exp.mismatched
-    assert set(res.compared_columns) == set(exp.column_mismatches) | set(res.compared_columns)
+    assert {c: n for c, n in res.column_mismatches.items() if n} == {
+        c: n for c, n in exp.column_mismatches.items() if n
+    }
     assert res.timings["hash"] > 0
     verified = compare_rows(dataset / "left", dataset / "right", ["id"], window_rows=window_rows, verify_hash=True)
     assert (verified.mismatched, verified.hash_collisions) == (exp.mismatched, 0)
@@ -256,6 +256,24 @@ def test_column_groups_give_the_same_result(dataset: Path, groups: int, monkeypa
     assert res.mismatched == exp.mismatched
     verified = compare_rows(dataset / "left", dataset / "right", ["id"], window_rows=3_000, verify_hash=True)
     assert (verified.mismatched, verified.hash_collisions) == (exp.mismatched, 0)
+    # com tolerância (as numéricas comparadas uma a uma, em todos os pares), como o caminho columnwise do baseline
+    tol = compare_rows(dataset / "left", dataset / "right", ["id"], window_rows=3_000, abs_tol=1e-12)
+    assert tol.mismatched == exp.mismatched
+    assert tol.column_mismatches == res.column_mismatches
+
+
+def test_tolerance_and_text_options() -> None:
+    left = pl.DataFrame({"id": [1, 2, 3, 4], "f": [1.0, 2.0, 3.0, 4.0], "s": ["Ana", "b c", "X", "y"]})
+    right = pl.DataFrame({"id": [1, 2, 3, 4], "f": [1.4, 2.6, 3.0, 4.0], "s": ["ana", "bc", "X ", "Y"]})
+    exact = compare_rows(left, right, ["id"])
+    assert exact.column_mismatches == {"f": 2, "s": 4}
+    assert exact.mismatched == 4
+    loose = compare_rows(left, right, ["id"], abs_tol={"f": 0.5}, ignore_case=True, ignore_spaces=True)
+    assert loose.column_mismatches == {"f": 1, "s": 0}  # 2,6 - 2 = 0,6 > 0,5
+    assert loose.mismatched == 1
+    rel = compare_rows(left, right, ["id"], rel_tol=0.25, ignore_case=True)
+    # |l - r| <= 0,25 * |r|: 0,4 > 0,35 (diverge), 0,6 <= 0,65; "b c"/"bc" e "X"/"X " seguem diferentes
+    assert rel.column_mismatches == {"f": 1, "s": 2}
 
 
 def test_count_rows_has_no_mismatched(dataset: Path) -> None:

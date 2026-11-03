@@ -148,6 +148,7 @@ def test_temporal_and_decimal(s: pl.Series, width: int) -> None:
 def test_value_width() -> None:
     assert value_width(b"l") == 8
     assert value_width(b"tsu:UTC") == 8
+    assert value_width(b"_pli128") == 16  # o Decimal do Polars 1.30 exportado como Series
     assert value_width(b"tDn") == 8
     assert value_width(b"d:10,2") == 16
     assert value_width(b"d:40,2,256") == 32

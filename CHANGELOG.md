@@ -165,4 +165,40 @@ Formato: [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/); versões: 
   para a leitura em paralelo (o gargalo agora é o processador, lendo). Fica, porque não atrapalha. Dois picos ainda
   passavam do limite (10M x 50: 983 MiB; chave de texto em 10M x 10: 992 MiB; o limite de 1GB é 954 MiB):
   `SAFETY` de 0,8 para 0,7 (janelas ~12% menores).
+- Com `SAFETY` = 0,7: todos os picos dentro do limite (o maior: 10M x 50, 904 MiB) e os tempos iguais. Fase 2
+  fechada: 10M x 300 em 36,5 s (0,73x o datacompolars, 686 MiB); ficam para a fase 5 o 1M x 50 (1,32x) e o
+  10M x 50 (1,03x, inconclusivo).
+
+### Fase 3 — coluna a coluna (ABI 6)
+- Kernel `dc_compare_column` (`cpp/compare.cpp`) e `core/compare.py` (`compare_column`, `tolerance_for`): uma coluna,
+  par a par, exata (o `eq_missing` do Polars, NaN = NaN) ou com tolerância nas numéricas (`|l - r| <= abs_tol +
+  rel_tol * |r|`, com a aritmética do Polars: inteiros no próprio tipo, com volta; Float32 em float; Decimal pelo
+  inteiro de 128 bits). Nulo dos dois lados = igual. Conferido nos testes contra a própria expressão do datacompolars
+  rodando no Polars instalado, em todos os tipos inteiros, nos reais e no Decimal.
+- `compare_rows(..., abs_tol=..., rel_tol=..., ignore_case=..., ignore_spaces=...)` e `RowCounts.column_mismatches`
+  (divergências por coluna). Em cada grupo de colunas de uma janela: as exatas pelo hash de linha e, só nos pares
+  divergentes (poucos: um `gather` do Polars), a contagem coluna a coluna; as com tolerância, uma a uma, em todos os
+  pares. Cada grupo tem o seu hash (um par diverge se diverge em algum grupo), então a contagem por coluna sai
+  enquanto o grupo está em memória.
+- Texto com `ignore_case`/`ignore_spaces`: normalizado na leitura com as mesmas expressões do datacompolars
+  (`str.to_lowercase`, `str.replace_all(r"\s+", "")`), e depois comparado exato (pelo hash). O plano previa caixa e
+  espaços no C++ (ASCII e Latin-1 rápidos, UTF-8 completo); com as expressões do Polars o resultado bate com o do
+  datacompolars em qualquer texto Unicode, e o texto normalizado ainda vai pelo hash. O C++ fica para a fase 5, se o
+  perfil mandar.
+- Testes: todos os 21 gabaritos agora (tolerâncias e opções de texto inclusive), também por coluna e com
+  `verify_hash`; grupos de colunas com tolerância.
+- `tools/bench_hash.py --mode columnwise`: `abs_tol=1e-12`, contra o columnwise da linha de base, conferindo também
+  as contagens por coluna; resultado em `docs/benchmarks/fase3.{md,json}`.
+- Os testes contra o Polars confirmaram a aritmética dos inteiros (com volta, também os sem sinal) e acharam uma
+  diferença nos reais: o Polars compara reais em ordem total (NaN maior que tudo, NaN = NaN), não pelo IEEE. Na
+  tolerância isso importa: com r infinito, `rel_tol * |r|` pode dar `0 * inf = NaN`, e para o Polars `x <= NaN` é
+  verdade (o datacompolars dá esses pares como iguais). O kernel agora compara como o Polars (`polars_le`).
+- `column_mismatches` lista todas as colunas comparadas (as sem divergência com 0); o datacompolars lista só as
+  com divergência.
+- CI (min-deps, Polars 1.30): o Decimal exportado como Series sai com o formato `_pli128` (o mesmo inteiro de 128
+  bits); o hash passava (o DataFrame inteiro sai como `d:`), mas o `verify_hash` e a coluna a coluna recusavam a
+  coluna. `_pli128` aceito como Decimal no `import_column` e no `dc_describe_batch`.
+- Benchmark coluna a coluna (`abs_tol = 1e-12`): contagens certas (também por coluna) em tudo; 10M x 300 em 37,2 s
+  (0,57x o columnwise do datacompolars, 805 MiB); 1M x 50, 1M x 300, 10M x 10 e 10M x 50 `ok`; 1M x 10
+  inconclusivo (1,17x). Um pico de 10M x 50 passou o limite em 1% (964 MiB): `SAFETY` = 0,65.
 

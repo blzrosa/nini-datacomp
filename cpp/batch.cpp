@@ -59,7 +59,10 @@ void kind_of(const char* f, i64* kind, i64* width) {
       return;
     }
   }
-  if (starts(f, "ts") || starts(f, "tD")) {   // Datetime ("tsu:UTC") e Duration ("tDu"): int64
+  if (eq(f, "_pli128")) {   // o Decimal do Polars 1.30 (o mesmo inteiro de 128 bits com outro nome de formato)
+    *kind = BYTES;
+    *width = 16;
+  } else if (starts(f, "ts") || starts(f, "tD")) {   // Datetime ("tsu:UTC") e Duration ("tDu"): int64
     *kind = SIGNED;
     *width = 8;
   } else if (starts(f, "d:")) {   // decimal128 "d:precisão,escala"; decimal256 traz ",256" no fim

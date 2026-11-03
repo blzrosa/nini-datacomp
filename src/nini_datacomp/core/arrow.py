@@ -51,6 +51,8 @@ def value_width(fmt: bytes) -> int | None:
     for prefix, width in _PREFIXED.items():
         if fmt.startswith(prefix):
             return width
+    if fmt == b"_pli128":  # o Decimal do Polars 1.30 exportado como Series: o mesmo inteiro de 128 bits, outro nome
+        return 16
     if fmt.startswith(b"d:"):  # decimal128 "d:precisão,escala"; decimal256 traz ",256"
         return 32 if fmt.count(b",") >= 2 and fmt.rsplit(b",", 1)[1] == b"256" else 16
     return None

@@ -6,7 +6,8 @@
 Mesma medição do bench_baseline e do bench_rows: cada execução num processo novo, média e IC de 95%, pico de memória
 amostrado de fora. A razão de tempo contra a linha de base (``docs/benchmarks/baseline.json``) usa a regra do plano:
 ``ok`` se o IC inteiro da razão fica em até 1,10. As contagens (em comum, só de um lado, divergentes) são conferidas
-contra o ``expected.json`` dos dados. Resultado em ``docs/benchmarks/fase2.md`` e ``fase2.json``.
+contra o ``expected.json`` dos dados, também por coluna. Resultado em ``docs/benchmarks/fase2.md`` e ``fase2.json``;
+com ``--mode columnwise`` (``abs_tol=1e-12``, como o columnwise da linha de base), em ``fase3.md`` e ``fase3.json``.
 """
 
 from __future__ import annotations
@@ -46,7 +47,7 @@ def worker(spec: dict[str, Any]) -> None:
     from nini_datacomp.pipeline import compare_rows  # noqa: PLC0415 - no subprocesso, fora do cronômetro
 
     t0 = time.perf_counter()
-    res = compare_rows(spec["left"], spec["right"], ["id"], memory_limit=spec["memory_limit"])
+    res = compare_rows(spec["left"], spec["right"], ["id"], memory_limit=spec["memory_limit"], abs_tol=spec["abs_tol"])
     seconds = time.perf_counter() - t0
     out = {
         "seconds": seconds,
@@ -55,6 +56,7 @@ def worker(spec: dict[str, Any]) -> None:
         "left_only": res.left_only,
         "right_only": res.right_only,
         "mismatched": res.mismatched,
+        "columns": {c: n for c, n in res.column_mismatches.items() if n},
         "windows": res.windows,
         "pieces": res.hash_pieces,
         "groups": res.column_groups,
@@ -92,11 +94,11 @@ def measure_once(spec: dict[str, Any]) -> dict[str, Any]:
 
 
 # ----------------------------------------------------------------------------- relatório
-def _baseline(case: str) -> dict[str, Any] | None:
+def _baseline(case: str, mode: str) -> dict[str, Any] | None:
     if not BASELINE.exists():
         return None
     rows, cols = case.split("x")
-    return json.loads(BASELINE.read_text(encoding="utf-8")).get(f"hash/{rows}/{cols}")
+    return json.loads(BASELINE.read_text(encoding="utf-8")).get(f"{mode}/{rows}/{cols}")
 
 
 def _stats(d: dict[str, float]) -> Stats:
@@ -119,14 +121,15 @@ def _phases(runs: list[dict[str, Any]]) -> str:
     return ", ".join(parts)
 
 
-def report(results: dict[str, list[dict[str, Any]]], memory_limit: str) -> Path:
+def report(results: dict[str, list[dict[str, Any]]], memory_limit: str, mode: str) -> Path:
     from nini_datacomp.windows import parse_memory_limit  # noqa: PLC0415
 
     limit_mib = parse_memory_limit(memory_limit) / MB
     DOCS.mkdir(parents=True, exist_ok=True)
-    (DOCS / "fase2.json").write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
+    name = "fase2" if mode == "hash" else "fase3"
+    (DOCS / f"{name}.json").write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
     lines = [
-        "# Fase 2: caminho exato (hash de linha)",
+        "# Fase 2: caminho exato (hash de linha)" if mode == "hash" else "# Fase 3: coluna a coluna (abs_tol = 1e-12)",
         "",
         f"`memory_limit = {memory_limit}`. Média ± meia largura do IC de 95%, cada execução num processo novo. Razão =",
         "tempo do nini-datacomp / tempo do datacompolars 0.4.4 (caminho hash, `baseline.json`), com o IC de 95%",
@@ -142,7 +145,7 @@ def report(results: dict[str, list[dict[str, Any]]], memory_limit: str) -> Path:
     ]
     detail = ["", "Etapas (média, s; `read_wait` = a leitura que não ficou escondida atrás da comparação):", ""]
     for case, runs in results.items():
-        base = _baseline(case)
+        base = _baseline(case, mode)
         seconds = [r["seconds"] for r in runs]
         ok = "✓" if all(r["ok"] for r in runs) else "✗"
         fits = "✓" if max(r["peak_mb"] for r in runs) <= limit_mib else "✗"
@@ -161,7 +164,7 @@ def report(results: dict[str, list[dict[str, Any]]], memory_limit: str) -> Path:
         detail.append(
             f"- {case}: {_phases(runs)}; {groups} grupo(s) de colunas; {pieces:.1f} pedaços de memória por lado e parte"
         )
-    path = DOCS / "fase2.md"
+    path = DOCS / f"{name}.md"
     path.write_text("\n".join(lines + detail) + "\n", encoding="utf-8")
     return path
 
@@ -171,18 +174,28 @@ def main() -> None:
     ap.add_argument("--cases", nargs="+", default=list(CASES))
     ap.add_argument("--runs", type=int, default=5)
     ap.add_argument("--memory-limit", default="1GB")
+    ap.add_argument(
+        "--mode", choices=("hash", "columnwise"), default="hash",
+        help="columnwise: abs_tol=1e-12 (as numéricas comparadas uma a uma), contra o columnwise do datacompolars",
+    )  # fmt: skip
     args = ap.parse_args()
+    abs_tol = 1e-12 if args.mode == "columnwise" else 0.0
     results: dict[str, list[dict[str, Any]]] = {}
     for case in args.cases:
         root = dataset(case)
         exp = load_expected(root)
         want = (exp.common, exp.left_only, exp.right_only, exp.mismatched)
-        spec = {"left": str(root / "left"), "right": str(root / "right"), "memory_limit": args.memory_limit}
+        spec = {
+            "left": str(root / "left"), "right": str(root / "right"), "memory_limit": args.memory_limit,
+            "abs_tol": abs_tol,
+        }  # fmt: skip
+        want_columns = {c: n for c, n in exp.column_mismatches.items() if n}
         measure_once(spec)  # aquecimento (cache de disco), descartado
         results[case] = []
         for i in range(args.runs):
             r = measure_once(spec)
             r["ok"] = (r["common"], r["left_only"], r["right_only"], r["mismatched"]) == want
+            r["ok"] = r["ok"] and r["columns"] == want_columns
             results[case].append(r)
             print(
                 f"  {case:<14} #{i + 1}/{args.runs}: {r['seconds']:7.3f} s  {r['peak_mb']:7.0f} MB  "
@@ -190,7 +203,7 @@ def main() -> None:
                 f"{'ok' if r['ok'] else 'ERRADO'}",
                 flush=True,
             )
-    print(f"relatório: {report(results, args.memory_limit).relative_to(ROOT)}")
+    print(f"relatório: {report(results, args.memory_limit, args.mode).relative_to(ROOT)}")
 
 
 if __name__ == "__main__":
