@@ -9,6 +9,7 @@ import random
 import struct
 from collections.abc import Sequence
 from datetime import date, datetime
+from itertools import pairwise
 from typing import Any
 
 import polars as pl
@@ -18,7 +19,7 @@ import make_golden
 from cases import CASES
 from nini_datacomp import UnsupportedTypeError
 from nini_datacomp.core.arrow import import_column, import_frame
-from nini_datacomp.core.keys import Alignment, align_frames, align_keys, key_kind
+from nini_datacomp.core.keys import Alignment, align_frames, align_keys, align_pieces, key_kind
 
 STRATEGIES = ("auto", "merge", "hash")
 
@@ -221,3 +222,55 @@ def test_align_frames_matches_align_keys(strategy: Any) -> None:
     assert bad is not None
     with pytest.raises(ValueError, match="tipos diferentes"):
         align_frames(lf, bad)
+
+
+@pytest.mark.parametrize("dups", [0, 3])
+def test_parallel_hash_join_matches_one_thread(dups: int) -> None:
+    """O hash join em partes, em várias threads, dá os mesmos pares (na mesma ordem) e as mesmas contagens que numa
+    thread só, com chave inteira, chave composta (caminho genérico) e repetidas."""
+    rng = random.Random(11)
+    n = 120_000
+    lk, rk = rng.sample(range(n + n // 5), n), rng.sample(range(n + n // 5), n)
+    lk[:dups], rk[:dups] = lk[dups : 2 * dups], rk[dups : 2 * dups]
+    left = pl.DataFrame({"a": lk, "b": [f"x{v % 13}" for v in lk]})
+    right = pl.DataFrame({"a": rk, "b": [f"x{v % 13}" for v in rk]})
+    for keys in (["a"], ["a", "b"]):
+        lc, rc = [import_column(left[c]) for c in keys], [import_column(right[c]) for c in keys]
+        one = align_keys(lc, rc, "hash", threads=1)
+        many = align_keys(lc, rc, "hash", threads=8)
+        assert (many.common, many.only_left, many.only_right) == (one.common, one.only_left, one.only_right)
+        assert (many.dup_left, many.dup_right) == (one.dup_left, one.dup_right) == (dups, dups)
+        assert many.left.tolist() == one.left.tolist()
+        assert many.right.tolist() == one.right.tolist()
+        if not dups:
+            assert one.common == len(set(lk) & set(rk))
+
+
+@pytest.mark.parametrize("dtype", [pl.Int64, pl.Int32])
+def test_align_pieces_reads_chunked_keys(dtype: Any) -> None:
+    """O merge direto dos pedaços de memória (`align_pieces`) dá o mesmo que `align_keys` com a coluna inteira, com
+    pedaços de tamanhos diferentes nos dois lados, e desiste (None) com a chave fora de ordem ou com nulos."""
+    rng = random.Random(3)
+    left = sorted(rng.sample(range(50_000), 20_000))
+    right = sorted(rng.sample(range(50_000), 18_000))
+
+    def chunked(values: list[int], cuts: list[int]) -> pl.Series:
+        parts = [pl.Series("k", values[a:b], dtype=dtype) for a, b in pairwise([0, *cuts, len(values)])]
+        out = parts[0]
+        for p in parts[1:]:
+            out = out.append(p)
+        return out
+
+    ls, rs = chunked(left, [7, 5_000, 12_345]), chunked(right, [9_000])
+    assert ls.n_chunks() == 4
+    got = align_pieces([import_column(c) for c in ls.get_chunks()], [import_column(c) for c in rs.get_chunks()])
+    want = align_keys([import_column(ls.rechunk())], [import_column(rs.rechunk())], "merge")
+    assert got is not None
+    assert (got.common, got.only_left, got.only_right) == (want.common, want.only_left, want.only_right)
+    assert got.strategy == "merge"
+    assert got.left.tolist() == want.left.tolist()
+    assert got.right.tolist() == want.right.tolist()
+    shuffled = chunked([*left[1:], left[0]], [100])
+    assert align_pieces([import_column(c) for c in shuffled.get_chunks()], [import_column(rs)]) is None
+    nulls = pl.Series("k", [1, None, 3], dtype=dtype)
+    assert align_pieces([import_column(nulls)], [import_column(nulls)]) is None

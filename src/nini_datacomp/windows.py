@@ -34,7 +34,7 @@ from typing import Any
 
 import polars as pl
 
-from .io import Source, row_groups
+from .io import KeyStats, Source, key_stats, row_groups
 
 __all__ = ["MIN_MEMORY", "Plan", "Window", "parse_memory_limit", "plan_windows"]
 
@@ -47,10 +47,19 @@ SAFETY = 0.65  # folga para o que a estimativa não vê (o próprio processo, fr
 # ao decodificar e filtrar. Era 4 (medido na fase 1c, com o bug que deixava três janelas vivas e o alocador do Polars
 # guardando memória); na fase 2, com os dois corrigidos, o pico ficou em 1,9 a 2,9x a maior janela (+~200 MB do
 # processo), e o nini-datacomp usava ~2/3 do memory_limit: janelas menores que o necessário, e mais leituras. Com 3, a
-# contagem com chave de texto em 10M x 10 passou do limite (1.086 MB com memory_limit 1GB): 3,5.
-IN_FLIGHT = 3.5
+# contagem com chave de texto em 10M x 10 passou do limite (1.086 MB com memory_limit 1GB): 3,5. Na fase 5, com
+# o alocador devolvendo a memória em 50 ms, o pico passou do limite nas tabelas de 300 colunas mesmo com 4,5 e com
+# 5 grupos de colunas (até 1.097 MB com 1 GB): a memória que ele guarda acompanha a velocidade da leitura, não o
+# tamanho da janela. A correção foi no alocador (10 ms, core/allocator.py). Com 10 ms, 3,5 passou do limite em
+# 3% (10M x 50 coluna a coluna, 983 MB) e 4,5 coube com folga (até 767 MB), mas com janelas menores que o necessário
+# (10M x 50 de 4,63 para 4,84 s): 4.
+IN_FLIGHT = 4.0
+# Nas tabelas largas cada janela é um row group (não dá para menos) e só o número de grupos de colunas decide a memória.
+# Com 10 ms e 3 grupos, 1M x 300 coluna a coluna ficou em 909 ± 55 MB (até 968, acima do limite de 954) com IN_FLIGHT
+# 3,5 e com 4 (a janela é a mesma); com 5 grupos (o que este fator dá ali), 700 ± 26 MB (até 718), ~7% mais lento.
+GROUP_IN_FLIGHT = 6.75
 KERNEL_BYTES_PER_ROW = 32  # pares (8), hashes dos dois lados (16) e tabelas, por linha da janela
-SAMPLE_ROWS = 50_000  # linhas lidas para medir os bytes por linha
+SAMPLE_ROWS = 10_000  # linhas lidas (só das colunas de largura variável) para medir os bytes por linha
 SAMPLE_KEYS = 200_000  # chaves da amostra que define as fronteiras quando a fonte não está em ordem
 _UNITS = {
     "": 1, "b": 1,
@@ -402,7 +411,8 @@ def _window_size(
     # o trabalho (medido na fase 2: 10M x 300 com janelas de ~52 mil linhas e row groups de 100 mil, cada um lido duas
     # vezes). Então a janela fica com um row group, e a memória cabe lendo as colunas em grupos (o hash de linha
     # continua de um grupo para o outro: mesmo resultado).
-    groups = -(-floor // rows_per_window)
+    per_row_group = GROUP_IN_FLIGHT * (bpr[0] + bpr[1]) + 2 * KERNEL_BYTES_PER_ROW
+    groups = -(-floor // max(1, int(budget * SAFETY / per_row_group)))
     notes = [
         f"o memory_limit pede janelas de {rows_per_window:,} linhas, menos que um row group ({floor:,}): cada janela "
         f"leva um row group, lido em {min(groups, max(columns, 1))} grupos de colunas"
@@ -451,6 +461,76 @@ def _window_files(ranges: list[FileRange] | None, windows: list[Window]) -> list
     return [tuple(i for i, r in enumerate(ranges) if _touches(r, w)) for w in windows]
 
 
+@dataclass(frozen=True)
+class _FooterKeys:
+    """O que o rodapé dos Parquet de um lado diz da chave (uma coluna inteira), sem ler os dados: se há chave nula, a
+    chave no começo de cada row group (só se os row groups estão em ordem e não se sobrepõem: aí o mínimo de cada um é
+    a primeira chave) e a faixa de chaves de cada arquivo."""
+
+    nulls: bool
+    firsts: pl.DataFrame | None
+    ranges: list[FileRange] | None
+
+
+def _source_name(source: Source, column: str) -> str | None:
+    """O nome da coluna nos arquivos (antes das renomeações da fonte), ou None se a coluna é calculada ou convertida
+    depois da leitura (aí as estatísticas do arquivo não valem para ela)."""
+    name = column
+    for step in reversed(source.steps):
+        if isinstance(step, dict):
+            name = next((old for old, new in step.items() if new == name), name)
+            continue
+        for expr in step:
+            try:
+                out = expr.meta.output_name()
+            except Exception:  # expressão sem nome de saída claro: não arrisca
+                return None
+            if out == name:
+                return None
+    return name
+
+
+def _footer_keys(source: Source, keys: Sequence[str]) -> _FooterKeys | None:
+    """As estatísticas da chave nos rodapés (veja `_FooterKeys`), ou None se não servem: a chave não é uma coluna
+    inteira só, foi convertida depois da leitura, ou algum row group não tem as estatísticas."""
+    if not source.is_parquet or len(keys) != 1:
+        return None
+    dtype = source.lazy.collect_schema()[keys[0]]
+    name = _source_name(source, keys[0])
+    if name is None or not dtype.is_integer():
+        return None
+    per_file: list[list[KeyStats]] = []
+    for path in source.files:
+        stats = [g for g in key_stats(path, name) if g.rows > 0]
+        if any(g.nulls is None or (g.min is None and g.nulls < g.rows) for g in stats):
+            return None  # sem estatísticas (ou só a contagem de nulos sem o mínimo e o máximo)
+        per_file.append(stats)
+    groups = [g for stats in per_file for g in stats]
+    nulls = any((g.nulls or 0) > 0 for g in groups)
+    ranges: list[FileRange] | None = None
+    if len(source.files) > 1:
+        ranges = []
+        for stats in per_file:
+            valued = [g for g in stats if g.min is not None and g.max is not None]
+            lo = min((g.min for g in valued if g.min is not None), default=None)
+            hi = max((g.max for g in valued if g.max is not None), default=None)
+            ranges.append((lo, hi, any((g.nulls or 0) > 0 for g in stats)))
+    firsts = None
+    ordered = all(g.min is not None and g.max is not None for g in groups) and all(
+        a.max is not None and b.min is not None and a.max < b.min for a, b in pairwise(groups)
+    )
+    if ordered and len(groups) > 1:
+        starts = [s for s, g in zip(_row_group_starts(source), _all_groups(source), strict=True) if g > 0]
+        firsts = pl.DataFrame(
+            {"__i": pl.Series(starts, dtype=pl.UInt32), keys[0]: pl.Series([g.min for g in groups], dtype=dtype)}
+        )
+    return _FooterKeys(nulls, firsts, ranges)
+
+
+def _all_groups(source: Source) -> list[int]:
+    return [n for path in source.files for n in row_groups(path)]
+
+
 def plan_windows(
     left: Source,
     right: Source,
@@ -469,18 +549,30 @@ def plan_windows(
         raise ValueError("a chave precisa de ao menos uma coluna")
     budget = parse_memory_limit(memory_limit)
     kl, kr = _key_lazy(left, keys), _key_lazy(right, keys)
-    # uma rodada só de consultas, em paralelo: a amostra de cada lado, se há chave nula, as linhas, a chave no começo
-    # de cada row group e a faixa de chaves de cada arquivo (nada disso depende do tamanho das janelas)
-    firsts_q = [_firsts_query(left, kl), _firsts_query(right, kr)]
-    ranges_q = [_range_queries(left, keys), _range_queries(right, keys)]
+    # o que os rodapés dos Parquet já dizem da chave (nulos, começo dos row groups, faixa de cada arquivo) não precisa
+    # de consulta: com uma chave inteira, o planejamento não lê a chave nenhuma vez
+    footer = [_footer_keys(left, keys), _footer_keys(right, keys)]
+    null_q: list[pl.LazyFrame | pl.DataFrame] = [
+        kl.select(_any_null(keys).any()) if footer[0] is None else pl.DataFrame({"n": [footer[0].nulls]}),
+        kr.select(_any_null(keys).any()) if footer[1] is None else pl.DataFrame({"n": [footer[1].nulls]}),
+    ]
+    firsts_q = [
+        _firsts_query(src, lazy) if fk is None or fk.firsts is None else fk.firsts
+        for src, lazy, fk in ((left, kl, footer[0]), (right, kr, footer[1]))
+    ]
+    ranges_q = [_range_queries(src, keys) if fk is None else [] for src, fk in ((left, footer[0]), (right, footer[1]))]
+    # o resto numa rodada só de consultas, em paralelo: a amostra de cada lado, as linhas e o que os rodapés não deram
     got = iter(_collect([
         _sample(left, _variable_columns(left), sample_rows), _sample(right, _variable_columns(right), sample_rows),
-        kl.select(_any_null(keys).any()), kr.select(_any_null(keys).any()), _row_count(left, kl),
-        _row_count(right, kr), *[q for q in firsts_q if q is not None], *ranges_q[0], *ranges_q[1],
+        *null_q, _row_count(left, kl), _row_count(right, kr), *[q for q in firsts_q if q is not None], *ranges_q[0],
+        *ranges_q[1],
     ]))  # fmt: skip
     sample_l, sample_r, null_l, null_r, count_l, count_r = (next(got) for _ in range(6))
     firsts = [None if q is None else next(got) for q in firsts_q]
-    ranges = [_file_ranges([next(got) for _ in q]) for q in ranges_q]
+    ranges = [
+        fk.ranges if fk is not None else _file_ranges([next(got) for _ in q])
+        for fk, q in ((footer[0], ranges_q[0]), (footer[1], ranges_q[1]))
+    ]
     (bl, cl), (br, cr) = _bytes_per_row(left, sample_l), _bytes_per_row(right, sample_r)
     nl, nr = int(count_l.item()), int(count_r.item())
     null_l, null_r = bool(null_l.item()), bool(null_r.item())

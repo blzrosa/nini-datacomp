@@ -5,7 +5,7 @@
 #pragma once
 #include <stdint.h>
 
-#define DC_ABI_VERSION 8
+#define DC_ABI_VERSION 11
 
 // DC_API: exportada ao compilar a biblioteca (DC_BUILDING), importada ao usá-la de outro código C/C++
 #if defined(_WIN32)
@@ -33,9 +33,12 @@ DC_API int dc_describe_batch(const uint8_t* schema, const uint8_t* array, int k,
 DC_API int64_t dc_compare_column(const int64_t* left, const int64_t* right, const uint32_t* li, const uint32_t* ri, const uint32_t* subset, int64_t start, int64_t end, int tolerance, double abs_tol, double rel_tol, double scale, uint8_t* differs);
 DC_API int dc_compare_rows(int k, const int64_t* left, const int64_t* right, int64_t n, int64_t start, int64_t end, uint8_t* differs);
 DC_API int dc_compare_pairs(int k, int pl, const int64_t* lstarts, const int64_t* ldesc, int pr, const int64_t* rstarts, const int64_t* rdesc, const uint32_t* li, const uint32_t* ri, const uint32_t* subset, int64_t n, int64_t start, int64_t end, uint8_t* differs);
+DC_API int64_t dc_compare_column_all(const int64_t* left, const int64_t* right, const uint32_t* li, const uint32_t* ri, const uint32_t* subset, int64_t n, int tolerance, double abs_tol, double rel_tol, double scale, uint8_t* differs, int threads);
+DC_API int dc_compare_pairs_all(int k, int pl, const int64_t* lstarts, const int64_t* ldesc, int pr, const int64_t* rstarts, const int64_t* rdesc, const uint32_t* li, const uint32_t* ri, const uint32_t* subset, int64_t n, uint8_t* differs, int threads);
 
 /* keys.cpp */
-DC_API int dc_align_keys(int k, const int64_t* left, int64_t nl, const int64_t* right, int64_t nr, int strategy, uint32_t* li, uint32_t* ri, int64_t* out);
+DC_API int dc_align_keys(int k, const int64_t* left, int64_t nl, const int64_t* right, int64_t nr, int strategy, uint32_t* li, uint32_t* ri, int64_t* out, int threads);
+DC_API int dc_align_pieces(int pl, const int64_t* lstarts, const int64_t* ldesc, int pr, const int64_t* rstarts, const int64_t* rdesc, uint32_t* li, uint32_t* ri, int64_t* out);
 
 /* memory.cpp */
 DC_API int64_t dc_pool_alloc(int64_t nbytes);
@@ -46,10 +49,13 @@ DC_API void dc_pool_stats(int64_t* out);
 
 /* parquet_meta.cpp */
 DC_API int64_t dc_parquet_row_groups(const uint8_t* footer, int64_t n, int64_t* rows, int64_t cap);
+DC_API int64_t dc_parquet_key_stats(const uint8_t* footer, int64_t n, const uint8_t* name, int64_t name_len, int64_t* out, int64_t cap);
 
 /* rowhash.cpp */
 DC_API int dc_row_hash(int k, const int64_t* desc, int64_t start, int64_t end, int first, uint64_t* out);
 DC_API int64_t dc_diff_pairs(int k, const int64_t* left, const int64_t* right, const uint64_t* hl, const uint64_t* hr, const uint32_t* li, const uint32_t* ri, int64_t start, int64_t end, int verify, uint32_t* diff, int64_t* stats);
+DC_API int dc_row_hash_pieces(int k, int p, const int64_t* starts, const int64_t* descs, int first, uint64_t* out, int threads);
+DC_API int64_t dc_diff_pairs_all(int k, const int64_t* left, const int64_t* right, const uint64_t* hl, const uint64_t* hr, const uint32_t* li, const uint32_t* ri, int64_t n, int verify, uint32_t* diff, int64_t* stats, int threads);
 
 #ifdef __cplusplus
 }

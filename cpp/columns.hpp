@@ -91,6 +91,19 @@ inline u64 mix(u64 x) {   // finalizador do murmur3 (fmix64): avalanche completa
   return x;
 }
 
+// os r (1 a 7) bytes em p como um inteiro little-endian (os bytes de cima zerados): o mesmo valor de um memcpy de r
+// bytes num u64 zerado, mas com leituras de tamanho fixo (sem chamar o memcpy da libc, que um tamanho variável
+// força) e sem ler além de p[r - 1]. As leituras que se sobrepõem gravam os mesmos bytes nas mesmas posições.
+inline u64 load_tail(const u8* p, u64 r) {
+  if (r >= 4) {
+    u32 a, b;
+    std::memcpy(&a, p, 4);
+    std::memcpy(&b, p + r - 4, 4);
+    return (u64)a | ((u64)b << (8 * (r - 4)));
+  }
+  return (u64)p[0] | ((u64)p[r >> 1] << (8 * (r >> 1))) | ((u64)p[r - 1] << (8 * (r - 1)));
+}
+
 inline u64 hash_bytes(const u8* p, u64 n) {
   u64 h = 0x6A09E667F3BCC909ULL ^ (n * 0x9E3779B97F4A7C15ULL);
   u64 i = 0;
@@ -99,11 +112,7 @@ inline u64 hash_bytes(const u8* p, u64 n) {
     std::memcpy(&w, p + i, 8);
     h = mix(h ^ w) + 0x632BE59BD9B4E019ULL;
   }
-  if (i < n) {
-    u64 w = 0;
-    std::memcpy(&w, p + i, (size_t)(n - i));
-    h = mix(h ^ w ^ 0xA0761D6478BD642FULL);
-  }
+  if (i < n) h = mix(h ^ load_tail(p + i, n - i) ^ 0xA0761D6478BD642FULL);
   return mix(h);
 }
 

@@ -19,7 +19,7 @@ import polars as pl
 
 from .._native import lib, ptr
 from .arrow import Column, FrameColumns, import_column, import_frame
-from .blocks import Block, map_blocks, split
+from .blocks import Block, map_blocks, resolve_threads, split
 from .keys import descriptor, key_kind
 
 __all__ = ["Tolerance", "compare_column", "compare_frames", "compare_pairs", "tolerance_for"]
@@ -89,13 +89,12 @@ def compare_column(
     dc = lib()
     sub_ptr = 0 if sub is None else ptr(sub)
 
-    fixed = (ptr(ldesc), ptr(rdesc), ptr(li), ptr(ri), sub_ptr)
-    params = (int(tol is not None), tol.abs_tol if tol else 0.0, tol.rel_tol if tol else 0.0, scale, ptr(differs))
-
-    def run(b: Block) -> int:
-        return int(dc.dc_compare_column(*fixed, b.start, b.start + b.rows, *params))
-
-    count = sum(map_blocks(run, split(todo), threads))
+    count = int(
+        dc.dc_compare_column_all(
+            ptr(ldesc), ptr(rdesc), ptr(li), ptr(ri), sub_ptr, todo, int(tol is not None), tol.abs_tol if tol else 0.0,
+            tol.rel_tol if tol else 0.0, scale, ptr(differs), resolve_threads(threads),
+        )
+    )  # fmt: skip
     del lkeep, rkeep
     return differs, count
 
@@ -189,15 +188,9 @@ def compare_pairs(
     q = ri if sub is None else ri[sub]
     if int(p.max()) >= int(lstarts[-1]) or int(q.max()) >= int(rstarts[-1]):
         raise ValueError("índice de linha fora da janela")
-    dc = lib()
-    fixed = (
+    lib().dc_compare_pairs_all(
         columns, len(left), ptr(lstarts), ptr(ldesc), len(right), ptr(rstarts), ptr(rdesc), ptr(li), ptr(ri),
-        0 if sub is None else ptr(sub), n,
+        0 if sub is None else ptr(sub), n, ptr(differs), resolve_threads(threads),
     )  # fmt: skip
-
-    def run(b: Block) -> int:
-        return int(dc.dc_compare_pairs(*fixed, b.start, b.start + b.rows, ptr(differs)))
-
-    map_blocks(run, split(n), threads)
     del lkeep, rkeep
     return differs

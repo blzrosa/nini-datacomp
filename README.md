@@ -145,11 +145,11 @@ Os detalhes, com o caminho coluna a coluna (com tolerância), estão em
 
 ## Memória
 
-Importe o `nini_datacomp` antes do Polars. No import, ele configura o alocador do Polars (`MIMALLOC_PURGE_DELAY=0`
-e `MIMALLOC_RESET_DELAY=0`) para devolver na hora a memória que libera; sem isso, numa comparação grande no Windows o
-pico chega a ~1,9x. Se o Polars já tiver sido importado, não dá mais para configurar e o pacote avisa com
-`AllocatorWarning`; dá para definir as variáveis antes de iniciar o Python, ou silenciar com
-`NINI_DATACOMP_ALLOCATOR=0`.
+Importe o `nini_datacomp` antes do Polars. No import, ele configura o alocador do Polars (`MIMALLOC_PURGE_DELAY=10`
+e `MIMALLOC_RESET_DELAY=10`) para devolver em 10 ms a memória que libera: sem isso, numa comparação grande no Windows
+o pico chega a ~1,9x; devolvendo na hora, cada janela pede de novo ao sistema a memória da anterior (até ~30% mais
+lento). Se o Polars já tiver sido importado, não dá mais para configurar e o pacote avisa com `AllocatorWarning`; dá
+para definir as variáveis antes de iniciar o Python, ou silenciar com `NINI_DATACOMP_ALLOCATOR=0`.
 
 ## Vindo do datacompolars
 

@@ -27,8 +27,8 @@ from typing import Any
 
 # o alocador do Polars como o nini_datacomp o configura no import (core/allocator.py); aqui o Polars é importado antes,
 # então a variável vai direto no ambiente, que os subprocessos herdam
-os.environ.setdefault("MIMALLOC_PURGE_DELAY", "0")
-os.environ.setdefault("MIMALLOC_RESET_DELAY", "0")  # as duas, como o pacote (core/allocator.SETTINGS)
+os.environ.setdefault("MIMALLOC_PURGE_DELAY", "10")
+os.environ.setdefault("MIMALLOC_RESET_DELAY", "10")  # as duas, como o pacote (core/allocator.SETTINGS)
 
 import polars as pl
 import psutil

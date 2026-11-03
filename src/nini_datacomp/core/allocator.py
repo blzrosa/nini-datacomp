@@ -2,8 +2,14 @@
 
 Medido na fase 1c (``tools/diag_memory.py``, 10M linhas, ``memory_limit = 1GB``): com as janelas de ~200 MB, o
 processo ia acumulando memória janela após janela e terminava com ~1,1 GB, quase toda já liberada pelo Polars. Com
-``MIMALLOC_PURGE_DELAY=0`` o mimalloc devolve a memória na hora: pico de ~0,6–0,7 GB (−40 a −48%), sem custo de tempo
-nas tabelas largas (10M x 50: 5,6 s → 4,2 s) e +0,3 s nas estreitas (10M x 10).
+``MIMALLOC_PURGE_DELAY=0`` o mimalloc devolve a memória na hora: pico de ~0,6–0,7 GB (−40 a −48%).
+
+Medido na fase 5 (``tools/bench_hash.py``): devolver na hora tem um custo, porque a janela seguinte pede a mesma
+memória de volta ao sistema (e o Windows a entrega zerada). Com um atraso, a memória liberada ainda está lá quando é
+pedida de novo. Mas o que o mimalloc guarda acompanha a velocidade com que a memória passa por ele (bytes por segundo
+vezes o atraso), não o tamanho da janela: com 50 ms, as tabelas de 300 colunas (as que decodificam mais rápido)
+passavam do ``memory_limit`` (até 1.122 MB com 1 GB), mesmo com janelas e grupos de colunas menores. Com 10 ms, a grade
+inteira coube (pico até 767 MB com 1 GB), ainda mais rápida que com 0.
 
 O mimalloc lê a variável uma vez, quando a biblioteca do Polars carrega; depois não há como mudar. Por isso o
 ``nini_datacomp`` a define no próprio import, antes de importar o Polars, e só se o Polars ainda não estiver carregado
@@ -22,10 +28,12 @@ from typing import Literal
 
 from ..errors import AllocatorWarning
 
-__all__ = ["ALLOCATOR_ENV", "SETTINGS", "Status", "configure"]
+__all__ = ["ALLOCATOR_ENV", "PURGE_DELAY_MS", "SETTINGS", "Status", "configure"]
 
 ALLOCATOR_ENV = "NINI_DATACOMP_ALLOCATOR"
-SETTINGS = {"MIMALLOC_PURGE_DELAY": "0", "MIMALLOC_RESET_DELAY": "0"}  # RESET_DELAY: o nome antigo, mimalloc < 2.1
+PURGE_DELAY_MS = "10"
+# RESET_DELAY: o nome antigo, mimalloc < 2.1
+SETTINGS = {"MIMALLOC_PURGE_DELAY": PURGE_DELAY_MS, "MIMALLOC_RESET_DELAY": PURGE_DELAY_MS}
 
 # "set": definida agora; "user": já estava definida; "late": o Polars já tinha carregado; "disabled": desligado
 Status = Literal["set", "user", "late", "disabled"]
@@ -33,7 +41,7 @@ Status = Literal["set", "user", "late", "disabled"]
 _LATE = (
     "o Polars foi importado antes do nini_datacomp, então o alocador dele (mimalloc) vai guardar a memória que libera "
     "e o pico de uma comparação grande pode ficar bem maior (medido: até ~1,9x). Para evitar, importe o nini_datacomp "
-    "antes do Polars ou defina MIMALLOC_PURGE_DELAY=0 antes de iniciar o Python. NINI_DATACOMP_ALLOCATOR=0 silencia "
+    "antes do Polars ou defina MIMALLOC_PURGE_DELAY=10 antes de iniciar o Python. NINI_DATACOMP_ALLOCATOR=0 silencia "
     "este aviso."
 )
 

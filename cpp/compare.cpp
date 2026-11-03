@@ -12,6 +12,7 @@
 //     comparados como double; Float32 em float; Float64 em double; Decimal pelo inteiro de 128 bits, dividido por
 //     10^escala. A comparação final usa a ordem do Polars para reais (NaN maior que tudo; veja polars_le).
 #include "columns.hpp"
+#include "pool.hpp"
 
 namespace {
 
@@ -214,5 +215,36 @@ DC_EXPORT int dc_compare_pairs(int k, int pl, const i64* lstarts, const i64* lde
     const Side& y = R.locate(ri[p], &b);
     for (int c = 0; c < k; c++) differs[(i64)c * n + q] = cell_equal(x.cols[c], a, y.cols[c], b) ? 0 : 1;
   }
+  return 0;
+}
+
+// dc_compare_column sobre os `n` pares (de `subset`, ou todos) numa chamada só, em `threads` threads. Devolve quantos
+// divergem.
+DC_EXPORT i64 dc_compare_column_all(const i64* left, const i64* right, const u32* li, const u32* ri, const u32* subset,
+                                    i64 n, int tolerance, double abs_tol, double rel_tol, double scale, u8* differs,
+                                    int threads) {
+  const i64 step_rows = dc::task_rows(n, threads);
+  const i64 tasks = (n + step_rows - 1) / step_rows;
+  std::vector<i64> counts((size_t)tasks, 0);
+  dc::parallel_for(threads, tasks, [&](i64 t) {
+    const i64 start = t * step_rows, end = start + step_rows < n ? start + step_rows : n;
+    counts[(size_t)t] = dc_compare_column(left, right, li, ri, subset, start, end, tolerance, abs_tol, rel_tol, scale,
+                                          differs);
+  });
+  i64 total = 0;
+  for (i64 c : counts) total += c;
+  return total;
+}
+
+// dc_compare_pairs sobre os `n` pares numa chamada só, em `threads` threads.
+DC_EXPORT int dc_compare_pairs_all(int k, int pl, const i64* lstarts, const i64* ldesc, int pr, const i64* rstarts,
+                                   const i64* rdesc, const u32* li, const u32* ri, const u32* subset, i64 n, u8* differs,
+                                   int threads) {
+  const i64 step_rows = dc::task_rows(n, threads);
+  const i64 tasks = (n + step_rows - 1) / step_rows;
+  dc::parallel_for(threads, tasks, [&](i64 t) {
+    const i64 start = t * step_rows, end = start + step_rows < n ? start + step_rows : n;
+    dc_compare_pairs(k, pl, lstarts, ldesc, pr, rstarts, rdesc, li, ri, subset, n, start, end, differs);
+  });
   return 0;
 }

@@ -26,7 +26,7 @@ import polars as pl
 
 from .core.arrow import import_column, import_frame
 from .core.compare import Tolerance, compare_column, compare_pairs, tolerance_for
-from .core.keys import Alignment, align_frames, align_keys
+from .core.keys import Alignment, align_frames, align_keys, align_pieces
 from .core.memory import empty
 from .core.rowhash import Part, diff_pairs, row_hash, row_hash_parts
 from .errors import UnsupportedTypeError
@@ -508,7 +508,7 @@ def _run(
     for _, g, lf, rf in reader.pieces():
         t = time.perf_counter()
         if g == 0:  # a primeira parte da janela: alinha as chaves (todas as partes trazem as mesmas linhas)
-            a = _align_window(lf, rf, keys)
+            a = _align_window(lf, rf, keys, threads)
             t = _lap(spent, "align", t)
             aborted = _count(a, lf.height, rf.height, totals, strategies)
             hashing_now = groups is not None and not aborted and a.left.size > 0
@@ -592,13 +592,22 @@ def _timings(timings: dict[str, float], t0: float) -> dict[str, float]:
     return timings | {"other": max(0.0, total - measured), "total": total}
 
 
-def _align_window(lf: pl.DataFrame, rf: pl.DataFrame, keys: Sequence[str]) -> Alignment:
+def _align_window(lf: pl.DataFrame, rf: pl.DataFrame, keys: Sequence[str], threads: int | None) -> Alignment:
     """As chaves da janela alinhadas: as colunas da chave de cada lado numa exportação só do Polars (juntando os
     pedaços antes, como `import_column` já fazia); coluna a coluna se um lado não exporta assim (Categorical...)."""
-    left, right = import_frame(lf.select(keys).rechunk()), import_frame(rf.select(keys).rechunk())
+    if len(keys) == 1:  # o caso comum (PK inteira em ordem): o merge lê os pedaços de memória direto, sem juntá-los
+        lc, rc = lf.get_column(keys[0]).get_chunks(), rf.get_column(keys[0]).get_chunks()
+        merged = align_pieces([import_column(c) for c in lc], [import_column(c) for c in rc])
+        if merged is not None:
+            return merged
+
+    def keys_of(df: pl.DataFrame) -> pl.DataFrame:  # sem `select` (veja _hash_side): as Series, juntadas
+        return pl.DataFrame([df.get_column(k).rechunk() for k in keys])
+
+    left, right = import_frame(keys_of(lf)), import_frame(keys_of(rf))
     if left is not None and right is not None:
-        return align_frames(left, right)
-    return align_keys([import_column(lf[k]) for k in keys], [import_column(rf[k]) for k in keys])
+        return align_frames(left, right, threads=threads)
+    return align_keys([import_column(lf[k]) for k in keys], [import_column(rf[k]) for k in keys], threads=threads)
 
 
 def _lap(spent: dict[str, float], name: str, since: float) -> float:
@@ -816,8 +825,11 @@ def _hash_side(
         return []
     pieces = _pieces(df, columns)
     parts: list[tuple[int, Part]] = []
+    # as colunas sem `select`: um select passa pelo motor de consultas do Polars (~1 ms, mais a espera pelas threads
+    # dele, ocupadas lendo a janela seguinte), e eram um por pedaço; montar o DataFrame com as Series e fatiar, não
+    sub = pl.DataFrame([df.get_column(c) for c in columns])
     for start, end in pieces:
-        part = df.slice(start, end - start).select(columns)
+        part = sub.slice(start, end - start)
         frame = import_frame(part)  # todas as colunas numa chamada; senão, coluna a coluna
         parts.append((start, frame if frame is not None else [import_column(part[c]) for c in columns]))
     row_hash_parts(parts, df.height, first_column=first, out=out, threads=threads)

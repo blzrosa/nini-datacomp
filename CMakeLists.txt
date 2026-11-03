@@ -22,6 +22,10 @@ option(DC_NATIVE "Compilar para a CPU desta máquina (-march=native); nunca para
 file(GLOB DC_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/cpp/*.cpp")
 add_library(datacomp SHARED ${DC_SOURCES})
 target_include_directories(datacomp PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/cpp")
+# o pool de threads do C++ (cpp/pool.cpp): -pthread no Linux; no Windows e no macOS, nada a mais
+set(THREADS_PREFER_PTHREAD_FLAG ON)
+find_package(Threads REQUIRED)
+target_link_libraries(datacomp PRIVATE Threads::Threads)
 
 set(DC_X86 OFF)
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64|x64")

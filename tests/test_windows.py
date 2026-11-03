@@ -195,3 +195,48 @@ def test_each_window_reads_only_its_files(tmp_path: Path) -> None:
         assert (got.collect() if pred is None else got.filter(pred).collect()).height == want
     single = plan_windows(open_source(df), open_source(df), ["id"], window_rows=2_000)
     assert single.files == (None, None)  # DataFrame: não há arquivos
+
+
+@pytest.mark.parametrize("nulls", [False, True])
+def test_footer_statistics_give_the_same_plan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, nulls: bool) -> None:
+    """Com uma chave inteira, o planejamento usa as estatísticas dos rodapés (nulos, começo dos row groups, faixa de
+    cada arquivo) em vez de ler a chave; o plano sai o mesmo que lendo."""
+    from nini_datacomp import windows  # noqa: PLC0415
+
+    ids: list[int | None] = list(range(60_000))
+    if nulls:
+        ids[123] = None
+    df = pl.DataFrame({"id": ids, "v": [i % 7 for i in range(60_000)]}, schema={"id": pl.Int64, "v": pl.Int64})
+    for i in range(3):
+        df.slice(i * 20_000, 20_000).write_parquet(tmp_path / f"p{i}.parquet", row_group_size=5_000)
+    src = open_source(tmp_path)
+    fk = windows._footer_keys(src, ["id"])
+    assert fk is not None
+    assert fk.nulls == nulls
+    assert fk.ranges is not None
+    assert len(fk.ranges) == 3
+    if not nulls:
+        assert fk.firsts is not None
+        assert fk.firsts["id"].to_list() == list(range(0, 60_000, 5_000))
+    fast = plan_windows(src, src, ["id"], window_rows=10_000)
+    monkeypatch.setattr(windows, "_footer_keys", lambda *_: None)
+    slow = plan_windows(src, src, ["id"], window_rows=10_000)
+    assert fast.windows == slow.windows
+    assert fast.files == slow.files
+    assert fast.aligned_to_row_groups == slow.aligned_to_row_groups
+    assert_partition(fast, pl.read_parquet(tmp_path), ["id"])
+
+
+def test_footer_statistics_skip_renamed_and_cast_keys(tmp_path: Path) -> None:
+    from nini_datacomp import windows  # noqa: PLC0415
+
+    pl.DataFrame({"ID": range(100), "s": ["a"] * 100}).write_parquet(tmp_path / "a.parquet")
+    src = open_source(tmp_path / "a.parquet")
+    renamed = src.rename({"ID": "id"})
+    fk = windows._footer_keys(renamed, ["id"])
+    assert fk is not None  # renomeada: as estatísticas são as da coluna "ID" do arquivo
+    assert fk.ranges is None  # um arquivo só
+    cast = renamed.with_columns([pl.col("id").cast(pl.Int32)])
+    assert windows._footer_keys(cast, ["id"]) is None  # convertida depois da leitura: não vale
+    assert windows._footer_keys(open_source(tmp_path / "a.parquet"), ["s"]) is None  # texto
+    assert windows._footer_keys(open_source(tmp_path / "a.parquet"), ["ID", "s"]) is None  # composta

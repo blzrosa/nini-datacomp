@@ -7,7 +7,7 @@ import sys
 import pytest
 
 from nini_datacomp import AllocatorWarning
-from nini_datacomp.core.allocator import ALLOCATOR_ENV, SETTINGS, configure
+from nini_datacomp.core.allocator import ALLOCATOR_ENV, PURGE_DELAY_MS, SETTINGS, configure
 
 
 def test_sets_when_polars_not_loaded() -> None:
@@ -30,7 +30,7 @@ def test_disabled() -> None:
 
 def test_late_warns_on_windows() -> None:
     env: dict[str, str] = {}
-    with pytest.warns(AllocatorWarning, match="MIMALLOC_PURGE_DELAY=0"):
+    with pytest.warns(AllocatorWarning, match="MIMALLOC_PURGE_DELAY=10"):
         assert configure(env, modules={"polars"}, platform="win32") == "late"
     assert env == {}
 
@@ -48,7 +48,7 @@ def _child(code: str) -> subprocess.CompletedProcess[str]:
 def test_import_order_in_a_fresh_process() -> None:
     code = "import os, nini_datacomp, polars; print(nini_datacomp.ALLOCATOR_STATUS, os.environ['MIMALLOC_PURGE_DELAY'])"
     first = _child(code)
-    assert first.stdout.split() == ["set", "0"]
+    assert first.stdout.split() == ["set", PURGE_DELAY_MS]
     late = _child("import polars, nini_datacomp; print(nini_datacomp.ALLOCATOR_STATUS)")
     assert late.stdout.split() == ["late"]
     assert ("AllocatorWarning" in late.stderr) == (sys.platform == "win32")

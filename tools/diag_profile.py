@@ -19,8 +19,8 @@ import sys
 import time
 from pathlib import Path
 
-os.environ.setdefault("MIMALLOC_PURGE_DELAY", "0")  # o alocador como o pacote o configura
-os.environ.setdefault("MIMALLOC_RESET_DELAY", "0")
+os.environ.setdefault("MIMALLOC_PURGE_DELAY", "10")  # o alocador como o pacote o configura
+os.environ.setdefault("MIMALLOC_RESET_DELAY", "10")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 

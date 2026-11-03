@@ -21,11 +21,11 @@ import numpy as np
 from .._native import lib, ptr
 from ..errors import UnsupportedTypeError
 from .arrow import Column, FrameColumns
-from .blocks import BLOCK_ROWS, Block, map_blocks, parallel_map, resolve_threads, split
+from .blocks import resolve_threads
 from .keys import descriptor, key_kind
 from .memory import empty
 
-__all__ = ["MIN_TASK_ROWS", "Divergent", "Part", "diff_pairs", "row_hash", "row_hash_parts"]
+__all__ = ["Divergent", "Part", "diff_pairs", "row_hash", "row_hash_parts"]
 
 
 def _check_side(columns: Sequence[Column], n: int | None) -> int:
@@ -48,14 +48,6 @@ def row_hash(columns: Sequence[Column], n: int | None = None, *, threads: int | 
 
 
 Part = Sequence[Column] | FrameColumns  # as colunas de um pedaço: uma a uma, ou o DataFrame inteiro (import_frame)
-MIN_TASK_ROWS = 4_096
-
-
-def _task_rows(total: int, threads: int | None) -> int:
-    """Linhas por tarefa: ao menos ~4 tarefas por thread (uma janela de tabela larga tem poucas linhas e muitas
-    colunas: blocos de 65.536 linhas deixariam a maior parte das threads paradas), entre 4.096 e `BLOCK_ROWS`."""
-    workers = resolve_threads(threads)
-    return max(MIN_TASK_ROWS, min(BLOCK_ROWS, -(-total // (4 * workers))))
 
 
 def row_hash_parts(
@@ -108,18 +100,15 @@ def row_hash_parts(
     if len(ks) != 1:
         raise ValueError("os pedaços precisam ter as mesmas colunas")
     k = ks.pop()
-    step = _task_rows(n, threads)
-    tasks = [
-        (base, first, min(step, rows - first), desc) for base, rows, desc in pieces for first in range(0, rows, step)
-    ]
-
-    def run(task: tuple[int, int, int, np.ndarray]) -> int:
-        base, first, rows, desc = task
-        return int(dc.dc_row_hash(k, ptr(desc), first, first + rows, first_column, ptr(out[base + first :])))
-
-    codes = parallel_map(run, tasks, threads)
+    # uma chamada só: os pedaços e os blocos de linhas se dividem entre as threads do pool do C++ (cpp/pool.cpp), sem
+    # uma tarefa do Python por bloco
+    starts = np.array([base for base, _, _ in pieces] + [n], np.int64)
+    descs = np.ascontiguousarray(np.concatenate([desc for _, _, desc in pieces]), np.int64)
+    code = int(
+        dc.dc_row_hash_pieces(k, len(pieces), ptr(starts), ptr(descs), first_column, ptr(out), resolve_threads(threads))
+    )
     del keep  # vivos até aqui: o kernel leu os endereços de texto deles
-    if any(codes):
+    if code:
         raise UnsupportedTypeError(f"o hash de linha não lê alguma das colunas: {_names(parts[0][1])}")
     return out
 
@@ -177,18 +166,10 @@ def diff_pairs(
     rdesc, rkeep = descriptor(right) if verify else (np.zeros((1, 6), np.int64), [])
     k = len(left) if verify else 0
     buf = empty(npairs, np.uint32)
-    dc = lib()
-
-    def run(b: Block) -> tuple[int, int, int]:
-        start, rows = b.start, b.rows
-        stats = np.zeros(2, np.int64)
-        dc.dc_diff_pairs(
-            k, ptr(ldesc), ptr(rdesc), ptr(hl), ptr(hr), ptr(li), ptr(ri), start, start + rows, int(verify),
-            ptr(buf[start:]), ptr(stats),
-        )  # fmt: skip
-        return start, int(stats[0]), int(stats[1])
-
-    parts = map_blocks(run, split(npairs), threads)
+    stats = np.zeros(2, np.int64)
+    lib().dc_diff_pairs_all(
+        k, ptr(ldesc), ptr(rdesc), ptr(hl), ptr(hr), ptr(li), ptr(ri), npairs, int(verify), ptr(buf), ptr(stats),
+        resolve_threads(threads),
+    )  # fmt: skip
     del lkeep, rkeep
-    pairs = np.concatenate([buf[s : s + m] for s, m, _ in parts]) if parts else np.empty(0, np.uint32)
-    return Divergent(pairs, sum(c for _, _, c in parts))
+    return Divergent(buf[: int(stats[0])].copy(), int(stats[1]))

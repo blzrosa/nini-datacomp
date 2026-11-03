@@ -4,6 +4,52 @@ Formato: [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/); versões: 
 
 ## [Não lançado]
 
+### Fase 5b — kernels
+- Hash de linha do texto ~2,2x mais rápido (42 para 94 milhões de células/s por thread, medido com nomes curtos): o
+  fim de cada texto (1 a 7 bytes) era lido com um `memcpy` de tamanho variável, que vira uma chamada à libc a cada
+  célula; agora são leituras de tamanho fixo que montam os mesmos bytes, e o texto tem um laço próprio, sem o
+  despacho de tipo por célula. Numa tabela com o mix dos benchmarks (inteiro, real, texto, booleano, data, data e
+  hora), o hash passou de ~110 para ~230 milhões de células/s por thread. Os mesmos bits de antes (conferido contra
+  a biblioteca anterior em todos os tipos, com nulos, NaN, -0.0 e textos de 0 a 40 caracteres).
+- Inteiros e reais sem desvio nos nulos (o nulo entra como valor 0 com o sal do nulo, os mesmos bits).
+- Pool de threads no C++ (`cpp/pool.cpp`, ABI 9): o hash de linha (`dc_row_hash_pieces`), os pares divergentes
+  (`dc_diff_pairs_all`), a coluna a coluna (`dc_compare_column_all`) e a contagem por coluna (`dc_compare_pairs_all`)
+  são uma chamada do Python cada, com os blocos divididos entre threads do C++ que ficam vivas entre as chamadas.
+  Antes, cada bloco era uma tarefa do pool de threads do Python (em 10M x 10, ~1.300 tarefas por comparação só no
+  hash, cada uma com a sua passagem pelo GIL e pela fila).
+- Hash join em partes e em paralelo (as chaves fora de ordem): as linhas dos dois lados separadas pelos bits de cima
+  do hash da chave, e cada parte (uma tabela pequena) juntada por uma thread. Os mesmos pares, na mesma ordem, e as
+  mesmas contagens que numa thread só; ~1,8x com 2 threads, medido aqui (antes, uma thread só, ~17 milhões de
+  chaves/s). `align_keys` e `align_frames` ganharam `threads`.
+- Menos consultas ao Polars por janela: o hash e o alinhamento montavam as colunas de cada pedaço de memória com um
+  `select`, que passa pelo motor de consultas (~1 ms cada, mais a espera pelas threads do Polars, ocupadas lendo a
+  janela seguinte); agora o DataFrame sai das próprias Series (em 10M x 10, ~190 consultas a menos por comparação).
+- Planejamento sem ler a chave (ABI 10): com uma chave inteira, os nulos, a chave no começo de cada row group e a
+  faixa de chaves de cada arquivo saem das estatísticas do rodapé dos Parquet (`dc_parquet_key_stats`); antes, eram
+  duas passadas pela chave inteira de cada lado (em 10M x 10, ~0,13 s). Sem as estatísticas, ou com a chave
+  convertida depois da leitura, o planejamento lê a chave como antes.
+- Alinhamento sem juntar a chave (ABI 11): com uma chave de uma coluna int64/int32 sem nulos, em ordem (a PK de
+  sempre), o merge lê os pedaços de memória de cada lado direto (`dc_align_pieces`); antes, a chave de cada janela era
+  copiada inteira num pedaço só (`rechunk`, em 10M x 10 ~70 ms por comparação). Outras chaves juntam os pedaços como
+  antes.
+- Alocador do Polars: `MIMALLOC_PURGE_DELAY=10` no import (era 0). Devolver a memória na hora fazia cada janela
+  pedir de novo ao sistema (que a entrega zerada) a memória da anterior. Medido (`memory_limit = 1GB`, 1M x 50 /
+  10M x 50 / 10M x 10): 0 ms 0,43 / 4,95 / 0,91 s; 50 ms 0,35 / 4,49 / 0,66 s; 250 ms 0,31 / 4,06 / 0,61 s. Mas a
+  memória que o mimalloc guarda acompanha a velocidade com que ela passa por ele (bytes por segundo vezes o atraso),
+  não o tamanho da janela: com 50 ms, as tabelas de 300 colunas passavam do limite (até 1.122 MB), e janelas menores
+  (`IN_FLIGHT` 4,5) e mais grupos de colunas (5 em vez de 3) só tiravam ~75 MB. Com 10 ms a grade inteira coube
+  (pico até 767 MB). Com 10 ms e `IN_FLIGHT` 3,5, 10M x 50 coluna a coluna passou do limite em 3% (983 MB); com
+  4,5 coube, mas com janelas menores que o necessário (10M x 50 de 4,63 para 4,84 s): `IN_FLIGHT` = 4.
+  Nas tabelas de 300 colunas a janela é sempre um row group, e só os grupos de colunas mudam a memória: com 3 grupos,
+  1M x 300 coluna a coluna ficou em 909 ± 55 MB (até 968); com 5 (`GROUP_IN_FLIGHT` = 6,75 no lugar de `IN_FLIGHT`
+  só para contar os grupos), 700 ± 26 MB, ~7% mais lento (razão 0,56 → 0,60).
+- Atraso do alocador conforme o número de colunas: não dá. O mimalloc lê o atraso quando o Polars carrega, antes de
+  se saber quais tabelas vão ser comparadas, e o Polars não expõe a função que o muda depois.
+- Experimentos sem ganho, que ficam registrados: menos threads nos kernels (16 e 8 empatam, 4 perde) e os outros
+  modos de leitura do Polars (`columns` e `row_groups` ~2x mais lentos no 1M x 300, `prefiltered` empata).
+- Os rodapés dos Parquet são lidos uma vez por arquivo (guardados pelo caminho, tamanho e data de modificação), e a
+  amostra das colunas de texto para os bytes por linha tem 10 mil linhas (eram 50 mil).
+
 ## [0.1.0] — 2026-11-03
 
 Primeira versão: a reescrita do datacompolars 0.4.4 com a comparação em kernels C++.

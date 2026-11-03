@@ -23,8 +23,8 @@ from pathlib import Path
 from typing import Any
 
 # o alocador do Polars como o nini_datacomp o configura no import (core/allocator.py); os subprocessos herdam
-os.environ.setdefault("MIMALLOC_PURGE_DELAY", "0")
-os.environ.setdefault("MIMALLOC_RESET_DELAY", "0")
+os.environ.setdefault("MIMALLOC_PURGE_DELAY", "10")
+os.environ.setdefault("MIMALLOC_RESET_DELAY", "10")
 
 import psutil
 

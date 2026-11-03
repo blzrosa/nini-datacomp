@@ -7,6 +7,7 @@ fase 6 (``ReadOptions``).
 
 from __future__ import annotations
 
+import functools
 import glob
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -17,7 +18,7 @@ import polars as pl
 
 from ._native import lib, ptr
 
-__all__ = ["Source", "SourceLike", "open_source", "row_groups"]
+__all__ = ["KeyStats", "Source", "SourceLike", "key_stats", "open_source", "row_groups"]
 
 SourceLike = str | Path | pl.DataFrame | pl.LazyFrame
 Step = tuple[pl.Expr, ...] | dict[str, str]  # um with_columns ou uma renomeação
@@ -57,10 +58,16 @@ class Source:
     def scan(self, files: Sequence[Path]) -> pl.LazyFrame:
         """Só alguns dos arquivos Parquet da fonte, com as mesmas conversões: uma janela que cai em poucos arquivos
         não faz o Polars abrir o rodapé de todos (com 300 colunas, ~1 ms cada, a cada janela)."""
-        lf = pl.scan_parquet([str(f) for f in files])
+        lf = _scan([str(f) for f in files])
         for step in self.steps:
             lf = lf.rename(step) if isinstance(step, dict) else lf.with_columns(step)
         return lf
+
+
+def _scan(files: list[str]) -> pl.LazyFrame:
+    # o `parallel` padrão do Polars ("auto") ganhou dos outros modos na fase 5 (row_groups e columns: ~2x mais lentos
+    # em 1M x 300; prefiltered: igual)
+    return pl.scan_parquet(files)
 
 
 def _parquet_files(raw: str) -> list[Path]:
@@ -99,15 +106,23 @@ def open_source(source: SourceLike) -> Source:
         bad = [f.name for f in files if f.suffix.lower() not in _PARQUET]
         if bad:
             raise ValueError(f"por enquanto só Parquet (CSV e SAS chegam na fase 6): {bad[:3]}")
-        return Source(pl.scan_parquet([str(f) for f in files]), tuple(files))
+        return Source(_scan([str(f) for f in files]), tuple(files))
     raise TypeError(f"fonte não suportada: {type(source).__name__} (use caminho, pl.DataFrame ou pl.LazyFrame)")
 
 
-def row_groups(path: Path) -> list[int]:
-    """Linhas de cada row group do arquivo Parquet, lidas do rodapé (kernel ``dc_parquet_row_groups``)."""
+def _footer(path: Path) -> np.ndarray:
+    """Os bytes do FileMetaData do arquivo Parquet (o rodapé, sem os 8 finais). Guardados por arquivo (caminho, tamanho
+    e data de modificação): o planejamento lê o rodapé de cada arquivo várias vezes, e com 300 colunas ele tem dezenas
+    de KB."""
+    st = path.stat()
+    return _read_footer(str(path), st.st_size, st.st_mtime_ns)
+
+
+@functools.lru_cache(maxsize=256)
+def _read_footer(raw: str, size: int, mtime_ns: int) -> np.ndarray:
+    del mtime_ns  # só faz parte da chave do cache
+    path = Path(raw)
     with path.open("rb") as f:
-        f.seek(0, 2)
-        size = f.tell()
         if size < 12:
             raise ValueError(f"{path}: pequeno demais para ser Parquet")
         f.seek(size - 8)
@@ -119,12 +134,52 @@ def row_groups(path: Path) -> list[int]:
             raise ValueError(f"{path}: tamanho de rodapé inválido ({n})")
         f.seek(size - 8 - n)
         footer = np.frombuffer(f.read(n), np.uint8).copy()
+    footer.flags.writeable = False  # compartilhado pelo cache
+    return footer
+
+
+def row_groups(path: Path) -> list[int]:
+    """Linhas de cada row group do arquivo Parquet, lidas do rodapé (kernel ``dc_parquet_row_groups``)."""
+    footer = _footer(path)
     cap = 4096
     while True:
         out = np.zeros(cap, np.int64)
-        count = int(lib().dc_parquet_row_groups(ptr(footer), n, ptr(out), cap))
+        count = int(lib().dc_parquet_row_groups(ptr(footer), footer.size, ptr(out), cap))
         if count < 0:
             raise ValueError(f"{path}: rodapé Parquet ilegível")
         if count <= cap:
             return [int(x) for x in out[:count]]
         cap = count
+
+
+@dataclass(frozen=True)
+class KeyStats:
+    """As estatísticas de uma coluna inteira num row group, do rodapé do Parquet (None: o arquivo não gravou)."""
+
+    rows: int
+    min: int | None
+    max: int | None
+    nulls: int | None
+
+
+def key_stats(path: Path, column: str) -> list[KeyStats]:
+    """Mínimo, máximo e nulos da coluna ``column`` (inteira, do nível de cima) em cada row group, do rodapé (kernel
+    ``dc_parquet_key_stats``): o planejamento das janelas usa isso no lugar de ler a chave."""
+    footer = _footer(path)
+    name = np.frombuffer(column.encode("utf-8") or b"\0", np.uint8).copy()
+    name_len = len(column.encode("utf-8"))
+    cap = 4096
+    while True:
+        out = np.zeros((cap, 5), np.int64)
+        count = int(lib().dc_parquet_key_stats(ptr(footer), footer.size, ptr(name), name_len, ptr(out), cap))
+        if count < 0:
+            raise ValueError(f"{path}: rodapé Parquet ilegível")
+        if count <= cap:
+            break
+        cap = count
+    return [
+        KeyStats(
+            int(rows), int(lo) if flags & 1 else None, int(hi) if flags & 1 else None, int(nulls) if flags & 2 else None
+        )
+        for rows, lo, hi, nulls, flags in out[:count].tolist()
+    ]
