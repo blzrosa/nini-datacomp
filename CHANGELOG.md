@@ -220,3 +220,14 @@ Formato: [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/); versões: 
   alinhamento das chaves, e desligá-la só serviria para contagens infladas.
 - Testes: os 21 gabaritos pela API, inclusive as amostras valor a valor, com uma janela e com janelas de 2 linhas.
 
+### Fase 4b — relatório e publicação
+- `result.report(format=None, path=None, *, width=100, style="auto", max_columns=20, max_sample_columns=10,
+  print_output=False)`: o relatório do datacompolars nos mesmos quatro formatos (texto, Markdown, HTML, JSON),
+  portado para o resultado novo. Sem `format`, sai da extensão de `path`; com `path`, também salva. Diferente do
+  datacompolars, não imprime sozinho (`print_output=True` imprime).
+- A seção "Execution" diz como cada coluna foi comparada (hash de linha ou coluna a coluna com tolerância), as
+  janelas, os grupos de colunas, o `memory_limit` e a maior janela, os tempos por etapa e as versões.
+- README: uso e a tabela de migração do datacompolars.
+- Versão `0.1.0rc1` para o TestPyPI; o teste do TestPyPI nas máquinas limpas agora roda uma comparação de verdade e
+  o relatório nos quatro formatos.
+

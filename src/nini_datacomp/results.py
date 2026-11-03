@@ -12,9 +12,13 @@ import math
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timezone
-from typing import Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Literal
 
 import polars as pl
+
+if TYPE_CHECKING:
+    from .report import Format
 
 __all__ = [
     "ColumnResult",
@@ -144,6 +148,38 @@ class ComparisonResult:
             and not self.columns.right_only
             and not self.columns.type_mismatches
         )
+
+    def report(
+        self,
+        format: Format | None = None,
+        path: str | Path | None = None,
+        *,
+        width: int = 100,
+        style: Literal["auto", "unicode", "ascii"] = "auto",
+        max_columns: int = 20,
+        max_sample_columns: int = 10,
+        print_output: bool = False,
+    ) -> str:
+        """O relatório: ``"text"`` (padrão), ``"markdown"``, ``"html"`` ou ``"json"``; sem ``format``, sai da extensão
+        de ``path`` (.md, .html, .json, .txt). Com ``path``, também salva (UTF-8, criando as pastas). Devolve o texto.
+
+        Texto e Markdown mostram até ``max_columns`` colunas com divergência e as amostras de até
+        ``max_sample_columns``; HTML e JSON trazem tudo. ``width``: largura do texto (60 a 200).
+        """
+        from .report import ReportOptions, render, resolve_format, safe_print  # noqa: PLC0415 - import circular
+
+        fmt = resolve_format(format, path)
+        options = ReportOptions(
+            width=width, style=style, max_columns=max_columns, max_sample_columns=max_sample_columns
+        )
+        text = render(self, fmt, options)
+        if path is not None:
+            target = Path(path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text, encoding="utf-8")
+        if print_output:
+            safe_print(text)
+        return text
 
     def to_dict(self) -> dict[str, Any]:
         """Tudo em tipos do JSON (as amostras como listas de linhas, com cabeçalhos)."""

@@ -4,7 +4,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "nini-datacomp"
-version = "0.1.0.dev0"
+version = "0.1.0rc1"
 description = "Comparação de tabelas em escala: kernels C++ sobre as colunas do Polars, com janelas por chave e relatório."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -13,7 +13,7 @@ license-files = ["LICENSE", "NOTICE"]
 authors = [{ name = "Nini (blzrosa)" }]
 keywords = ["polars", "dataframe", "compare", "diff", "reconciliation", "data-quality", "parquet", "datacompy"]
 classifiers = [
-    "Development Status :: 2 - Pre-Alpha",
+    "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
     "Natural Language :: Portuguese (Brazilian)",

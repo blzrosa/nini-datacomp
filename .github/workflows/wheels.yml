@@ -127,6 +127,18 @@ jobs:
           col = import_column(pl.Series("x", [1, None, 3]))
           assert col.null_count == 1
           assert dc.pool_limit() > 0
+
+          # uma comparação de verdade, com o relatório nos quatro formatos
+          left = pl.DataFrame({"id": [1, 2, 3], "v": [1.0, 2.0, 3.0], "s": ["a", "b", "c"]})
+          right = pl.DataFrame({"id": [1, 2, 4], "v": [1.0, 2.5, 4.0], "s": ["a", "B", "d"]})
+          res = dc.compare(left, right, "id", ignore_case=True)
+          assert (res.rows.common, res.rows.mismatched, res.rows.left_only, res.rows.right_only) == (2, 1, 1, 1)
+          assert res.columns["v"].samples.rows() == [(2, 2.0, 2.5)]
+          assert res.columns["s"].mismatches == 0
+          assert dc.compare(left, right, "id", abs_tol=0.5, ignore_case=True).rows.mismatched == 0
+          for fmt in ("text", "markdown", "html", "json"):
+              assert res.report(fmt)
+          print(res.report(style="ascii"))
           print(dc.__version__, "ok")
           PY
 
