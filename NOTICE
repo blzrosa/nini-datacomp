@@ -2,3 +2,10 @@ nini-datacomp
 Copyright 2026 Nini (B. L. Z. Rosa)
 
 Reescrita do datacompolars (Apache-2.0, mesma autora), com partes do nini-datagen (MIT, mesma autora).
+
+Inclui, compilados na biblioteca nativa, para ler SAS, Stata e SPSS:
+
+- ReadStat (https://github.com/WizardMac/ReadStat), licença MIT, Copyright (c) 2013-2016 Evan Miller e
+  colaboradores: cpp/third_party/readstat (só os leitores; a versão está em VERSION, a licença em LICENSE).
+- miniz (https://github.com/richgel999/miniz), licença MIT, Copyright 2013-2014 RAD Game Tools and Valve Software e
+  2010-2014 Rich Geldreich and Tenacious Software LLC: cpp/third_party/miniz (só o descompressor, para os .zsav).

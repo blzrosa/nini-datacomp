@@ -21,6 +21,15 @@ from .api import compare  # noqa: E402
 from .core.memory import pool_limit, pool_stats, release_memory  # noqa: E402
 from .errors import AllocatorWarning, NativeLibraryError, UnsupportedTypeError  # noqa: E402
 from .options import CompareOptions  # noqa: E402
+from .readers import (  # noqa: E402
+    ReadOptions,
+    read_sas,
+    read_spss,
+    read_stata,
+    scan_sas,
+    scan_spss,
+    scan_stata,
+)
 from .results import (  # noqa: E402
     ColumnResult,
     ColumnSummary,
@@ -44,6 +53,7 @@ __all__ = [
     "ComparisonResult",
     "ExecutionInfo",
     "NativeLibraryError",
+    "ReadOptions",
     "RowSummary",
     "TypeMismatch",
     "UnsupportedTypeError",
@@ -51,5 +61,11 @@ __all__ = [
     "compare",
     "pool_limit",
     "pool_stats",
+    "read_sas",
+    "read_spss",
+    "read_stata",
     "release_memory",
+    "scan_sas",
+    "scan_spss",
+    "scan_stata",
 ]

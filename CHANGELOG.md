@@ -4,6 +4,29 @@ Formato: [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/); versões: 
 
 ## [Não lançado]
 
+## [0.2.0] — 2026-11-03
+
+### Fase 6a — formatos
+- Fontes em CSV/TSV, NDJSON, JSON, Arrow IPC/Feather, Avro, Excel, SAS (.sas7bdat, .xpt), Stata (.dta) e SPSS (.sav,
+  .zsav, .por), pela extensão. Cada uma é convertida uma vez para Parquet numa pasta temporária, aos pedaços de ~1/16
+  do `memory_limit` (entre 8 e 256 MB), e a comparação segue como sempre; a pasta some no fim, também com erro.
+  Numa pasta, os arquivos de dados de um formato só (uma pasta de Parquet ignora um .csv solto; formatos misturados
+  são erro).
+- `ReadOptions` (`compare(..., read=...)`, um para os dois lados ou um par): formato, codificação, texto vazio como
+  nulo, conversão de datas, separador/cabeçalho/vírgula decimal/nulos do CSV, tipos, planilha do Excel, subpastas,
+  pasta temporária.
+- SAS, Stata e SPSS pelo ReadStat (C, MIT) compilado na biblioteca, sem o extra `[sas]` nem pacote a mais: só os
+  leitores, com um iconv próprio (UTF-8 e as codificações de 1 byte: Latin-1, Windows-125x, ISO-8859-*, CP437/850...,
+  Mac; também os nomes do SAS, como `wlatin1`) e o descompressor do miniz (MIT) no lugar do zlib, para os .zsav. O
+  arquivo é lido numa thread do C++ e entregue em pedaços já em colunas do Arrow. Texto que não é UTF-8 válido é erro
+  claro (pede `encoding=`), em vez de texto quebrado. No Windows, caminhos com acentos abrem pelo nome em UTF-16.
+- Datas: colunas com formato de data, data e hora ou hora (SAS `DATE9.`, `MMDDYY10.`, `DATETIME20.`, `TIME8.`...;
+  Stata `%td`, `%tc`; SPSS `ADATE10`, `DATETIME22`, `TIME8`...) viram `Date`, `Datetime("us")` e `Time`.
+- `dc.read_sas`, `read_stata`, `read_spss` (um `pl.DataFrame`) e `scan_sas`, `scan_stata`, `scan_spss` (um
+  `pl.LazyFrame` lido aos pedaços).
+- Texto vazio de SAS/Stata/SPSS vira nulo por padrão (`blank_strings_as_null`), que é como o SAS grava texto ausente.
+- ABI 12 (`dc_stat_*`).
+
 ### Fase 5b — kernels
 - Hash de linha do texto ~2,2x mais rápido (42 para 94 milhões de células/s por thread, medido com nomes curtos): o
   fim de cada texto (1 a 7 bytes) era lido com um `memcpy` de tamanho variável, que vira uma chamada à libc a cada

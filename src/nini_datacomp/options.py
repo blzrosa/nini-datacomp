@@ -12,6 +12,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from .readers import ReadOptions
 from .windows import parse_memory_limit
 
 __all__ = ["CompareOptions"]
@@ -66,6 +67,18 @@ class CompareOptions(BaseModel):
         default=False,
         description="Confere as colunas exatas célula a célula em todos os pares (o hash de linha nunca decide só).",
     )
+    read: ReadOptions | tuple[ReadOptions, ReadOptions] = Field(
+        default_factory=ReadOptions,
+        description=(
+            "Como ler os arquivos (formato, codificação, separador do CSV, planilha do Excel...): um ReadOptions "
+            "para os dois lados, ou um par (esquerda, direita)."
+        ),
+    )
+
+    @property
+    def read_options(self) -> tuple[ReadOptions, ReadOptions]:
+        """As opções de leitura da esquerda e da direita."""
+        return self.read if isinstance(self.read, tuple) else (self.read, self.read)
 
     @field_validator("names")
     @classmethod

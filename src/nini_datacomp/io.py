@@ -1,8 +1,9 @@
 """Fontes de dados: abre caminhos, pastas, globs e frames do Polars como LazyFrame e guarda os arquivos Parquet na ordem
 em que o Polars os lê (o planejamento das janelas usa os row groups deles).
 
-Por enquanto: Parquet (arquivo, pasta com subpastas, glob), ``pl.DataFrame`` e ``pl.LazyFrame``. CSV e SAS chegam na
-fase 6 (``ReadOptions``).
+Parquet (arquivo, pasta com subpastas, glob), ``pl.DataFrame`` e ``pl.LazyFrame``. Os outros formatos (CSV, JSON,
+Arrow IPC, Avro, Excel, SAS, Stata, SPSS; `readers`) são convertidos uma vez para Parquet numa pasta temporária, que
+some no fim da comparação (ou quando a fonte some).
 """
 
 from __future__ import annotations
@@ -10,13 +11,14 @@ from __future__ import annotations
 import functools
 import glob
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
 import polars as pl
 
 from ._native import lib, ptr
+from .readers import DEFAULT_STAGE_BYTES, SUFFIXES, FileFormat, ReadOptions, Staged, format_of, stage
 
 __all__ = ["KeyStats", "Source", "SourceLike", "key_stats", "open_source", "row_groups"]
 
@@ -36,6 +38,7 @@ class Source:
     frame: pl.DataFrame | None = None  # a fonte já em memória (DataFrame), se for o caso
     # o que se aplica depois de ler (em toda leitura de `scan`): with_columns (conversões de tipo) e renomeações
     steps: tuple[Step, ...] = ()
+    staged: Staged | None = None  # a pasta temporária com o Parquet convertido (formatos que não são Parquet)
 
     @property
     def is_parquet(self) -> bool:
@@ -45,7 +48,7 @@ class Source:
         """A mesma fonte com ``exprs`` aplicadas (no LazyFrame, no DataFrame e em toda leitura de `scan`)."""
         exprs = tuple(exprs)
         frame = self.frame.with_columns(exprs) if self.frame is not None else None
-        return Source(self.lazy.with_columns(exprs), self.files, frame, (*self.steps, exprs))
+        return replace(self, lazy=self.lazy.with_columns(exprs), frame=frame, steps=(*self.steps, exprs))
 
     def rename(self, mapping: Mapping[str, str]) -> Source:
         """A mesma fonte com colunas renomeadas (também em toda leitura de `scan`)."""
@@ -53,7 +56,7 @@ class Source:
         if not mapping:
             return self
         frame = self.frame.rename(mapping) if self.frame is not None else None
-        return Source(self.lazy.rename(mapping), self.files, frame, (*self.steps, mapping))
+        return replace(self, lazy=self.lazy.rename(mapping), frame=frame, steps=(*self.steps, mapping))
 
     def scan(self, files: Sequence[Path]) -> pl.LazyFrame:
         """Só alguns dos arquivos Parquet da fonte, com as mesmas conversões: uma janela que cai em poucos arquivos
@@ -63,6 +66,11 @@ class Source:
             lf = lf.rename(step) if isinstance(step, dict) else lf.with_columns(step)
         return lf
 
+    def cleanup(self) -> None:
+        """Apaga o Parquet temporário dos formatos convertidos (nada a fazer nos outros)."""
+        if self.staged is not None:
+            self.staged.cleanup()
+
 
 def _scan(files: list[str]) -> pl.LazyFrame:
     # o `parallel` padrão do Polars ("auto") ganhou dos outros modos na fase 5 (row_groups e columns: ~2x mais lentos
@@ -70,43 +78,65 @@ def _scan(files: list[str]) -> pl.LazyFrame:
     return pl.scan_parquet(files)
 
 
-def _parquet_files(raw: str) -> list[Path]:
+def _hidden(f: Path, root: Path) -> bool:
+    # como o datacompolars: pastas e arquivos ocultos (".", "_": _SUCCESS, _tmp/...) ficam de fora
+    return any(part.startswith((".", "_")) for part in f.relative_to(root).parts)
+
+
+def _files(raw: str, read: ReadOptions) -> list[Path]:
+    """Os arquivos de uma fonte (arquivo, pasta ou glob), na ordem em que são lidos."""
     if _GLOB & set(raw):
         files = sorted(Path(m) for m in glob.glob(raw, recursive=True) if Path(m).is_file())
         if not files:
             raise FileNotFoundError(f"nenhum arquivo casa com {raw!r}")
         return files
     path = Path(raw)
-    if path.is_dir():
-        # como o datacompolars: subpastas incluídas; pastas e arquivos ocultos (".", "_") ficam de fora
-        files = sorted(
-            f
-            for f in path.rglob("*")
-            if f.is_file()
-            and f.suffix.lower() in _PARQUET
-            and not any(part.startswith((".", "_")) for part in f.relative_to(path).parts)
-        )
-        if not files:
-            raise FileNotFoundError(f"nenhum arquivo Parquet em {raw!r}")
-        return files
     if path.is_file():
         return [path]
-    raise FileNotFoundError(f"fonte não encontrada: {raw!r}")
+    if not path.is_dir():
+        raise FileNotFoundError(f"fonte não encontrada: {raw!r}")
+    found = path.rglob("*") if read.recursive else path.glob("*")
+    files = sorted(f for f in found if f.is_file() and f.suffix.lower() in SUFFIXES and not _hidden(f, path))
+    if read.format is not None:
+        files = [f for f in files if SUFFIXES[f.suffix.lower()] == read.format]
+    elif any(f.suffix.lower() in _PARQUET for f in files):
+        files = [f for f in files if f.suffix.lower() in _PARQUET]  # pasta de Parquet: o resto (um .csv solto) fica
+    if not files:
+        raise FileNotFoundError(f"nenhum arquivo de dados em {raw!r} (extensões: {', '.join(sorted(SUFFIXES))})")
+    return files
 
 
-def open_source(source: SourceLike) -> Source:
-    """Abre uma fonte (caminho, pasta, glob, DataFrame ou LazyFrame) como LazyFrame."""
+def _format(files: Sequence[Path], read: ReadOptions) -> FileFormat:
+    formats: set[FileFormat] = {format_of(f, read) for f in files}
+    if len(formats) > 1:
+        raise ValueError(
+            f"a fonte mistura formatos ({', '.join(sorted(formats))}); separe os arquivos ou escolha um com "
+            "ReadOptions(format=...)"
+        )
+    return formats.pop()
+
+
+def open_source(
+    source: SourceLike, read: ReadOptions | None = None, *, stage_bytes: int = DEFAULT_STAGE_BYTES
+) -> Source:
+    """Abre uma fonte (caminho, pasta, glob, DataFrame ou LazyFrame) como LazyFrame.
+
+    Arquivos que não são Parquet são convertidos para Parquet numa pasta temporária (`readers.stage`), em pedaços de
+    ~``stage_bytes`` na memória; `Source.cleanup` apaga a pasta. A pasta é da `Source`: se ela some (coleta de
+    lixo), a pasta some junto, então guarde a `Source` enquanto usar o ``lazy`` dela.
+    """
     if isinstance(source, pl.LazyFrame):
         return Source(source)
     if isinstance(source, pl.DataFrame):
         return Source(source.lazy(), frame=source)
     if isinstance(source, (str, Path)):
-        raw = str(source)
-        files = _parquet_files(raw)
-        bad = [f.name for f in files if f.suffix.lower() not in _PARQUET]
-        if bad:
-            raise ValueError(f"por enquanto só Parquet (CSV e SAS chegam na fase 6): {bad[:3]}")
-        return Source(_scan([str(f) for f in files]), tuple(files))
+        read = read if read is not None else ReadOptions()
+        files = _files(str(source), read)
+        fmt = _format(files, read)
+        if fmt == "parquet":
+            return Source(_scan([str(f) for f in files]), tuple(files))
+        staged = stage(files, fmt, read, chunk_bytes=stage_bytes)
+        return Source(_scan([str(f) for f in staged.files]), tuple(staged.files), staged=staged)
     raise TypeError(f"fonte não suportada: {type(source).__name__} (use caminho, pl.DataFrame ou pl.LazyFrame)")
 
 

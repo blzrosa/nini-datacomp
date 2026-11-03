@@ -17,8 +17,14 @@ from .io import Source, SourceLike, open_source
 from .options import CompareOptions
 from .pipeline import RowCounts, _run, _tol_of, align_columns, sample_key_names
 from .results import ColumnResult, ColumnSummary, ComparisonResult, ExecutionInfo, RowSummary, TypeMismatch
+from .windows import parse_memory_limit
 
 __all__ = ["compare"]
+
+# Pedaços da conversão dos formatos que não são Parquet: 1/16 do memory_limit, entre 8 MB e 256 MB (o row group do
+# Parquet temporário sai desse tamanho, e as janelas da comparação não ficam menores que um row group)
+_STAGE_SHARE = 16
+_STAGE_MIN, _STAGE_MAX = 8 * 1024**2, 256 * 1024**2
 
 
 def compare(
@@ -29,8 +35,13 @@ def compare(
     options: CompareOptions | None = None,
     **kwargs: Any,
 ) -> ComparisonResult:
-    """Compara ``left`` e ``right`` (caminho de Parquet, pasta, glob, ``pl.DataFrame`` ou ``pl.LazyFrame``) pela chave
+    """Compara ``left`` e ``right`` (caminho de arquivo, pasta, glob, ``pl.DataFrame`` ou ``pl.LazyFrame``) pela chave
     ``on`` (uma coluna ou várias).
+
+    Arquivos: Parquet, CSV/TSV, NDJSON, JSON, Arrow IPC/Feather, Avro, Excel, SAS (.sas7bdat, .xpt), Stata (.dta) e
+    SPSS (.sav, .zsav, .por), pela extensão; ``read=dc.ReadOptions(...)`` muda como são lidos (formato, codificação,
+    separador...), para os dois lados ou um par (esquerda, direita). Os que não são Parquet são convertidos uma vez
+    para Parquet numa pasta temporária, apagada no fim.
 
     As opções vêm em ``options`` (`CompareOptions`) ou como argumentos nomeados (``abs_tol=0.01``); com os dois, os
     argumentos nomeados ganham. Erros fatais (chave que falta, de tipos diferentes, repetida) não levantam exceção:
@@ -46,7 +57,32 @@ def compare(
     keys = _keys(on, lower=lower)
     abs_tol, rel_tol = _names_of(opts.abs_tol, lower), _names_of(opts.rel_tol, lower)
 
-    ls, rs = open_source(left), open_source(right)
+    stage_bytes = min(_STAGE_MAX, max(_STAGE_MIN, parse_memory_limit(opts.memory_limit) // _STAGE_SHARE))
+    read_left, read_right = opts.read_options
+    ls = open_source(left, read_left, stage_bytes=stage_bytes)
+    try:
+        rs = open_source(right, read_right, stage_bytes=stage_bytes)
+    except BaseException:
+        ls.cleanup()
+        raise
+    try:
+        return _compare(ls, rs, keys, opts, abs_tol=abs_tol, rel_tol=rel_tol, t0=t0)
+    finally:
+        ls.cleanup()
+        rs.cleanup()
+
+
+def _compare(
+    ls: Source,
+    rs: Source,
+    keys: list[str],
+    opts: CompareOptions,
+    *,
+    abs_tol: float | dict[str, float],
+    rel_tol: float | dict[str, float],
+    t0: float,
+) -> ComparisonResult:
+    lower = not opts.case_sensitive_columns
     errors: list[str] = []
     if lower:
         ls, rs = _lowercase(ls, "left", errors), _lowercase(rs, "right", errors)
@@ -68,10 +104,10 @@ def compare(
             warnings.append(f"{label} names columns that are not compared: {unknown}")
 
     res = _run(
-        left, right, keys, memory_limit=opts.memory_limit, window_rows=opts.window_rows, columns=None, prefetch=True,
-        engine="auto", hashing=True, casting=opts.cast, verify_hash=opts.verify_hash, threads=opts.threads,
-        abs_tol=abs_tol, rel_tol=rel_tol, ignore_case=opts.ignore_case, ignore_spaces=opts.ignore_whitespace,
-        details=opts.details, samples=opts.samples, sources=(ls, rs),
+        ls.lazy, rs.lazy, keys, memory_limit=opts.memory_limit, window_rows=opts.window_rows, columns=None,
+        prefetch=True, engine="auto", hashing=True, casting=opts.cast, verify_hash=opts.verify_hash,
+        threads=opts.threads, abs_tol=abs_tol, rel_tol=rel_tol, ignore_case=opts.ignore_case,
+        ignore_spaces=opts.ignore_whitespace, details=opts.details, samples=opts.samples, sources=(ls, rs),
     )  # fmt: skip
     if res.dup_left:
         errors.append(f"Duplicate join keys in the left table: {res.dup_left:,} surplus rows")

@@ -40,9 +40,9 @@ def test_errors(tmp_path: Path) -> None:
         open_source(tmp_path)  # pasta sem Parquet
     with pytest.raises(FileNotFoundError):
         open_source(str(tmp_path / "*.parquet"))
-    (tmp_path / "x.csv").write_text("a\n1\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="só Parquet"):
-        open_source(tmp_path / "x.csv")
+    (tmp_path / "x.unknown").write_text("a\n1\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="formato desconhecido"):
+        open_source(tmp_path / "x.unknown")
     with pytest.raises(TypeError):
         open_source(123)  # type: ignore[arg-type]
 

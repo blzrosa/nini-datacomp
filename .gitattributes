@@ -2,3 +2,10 @@
 *.json text eol=lf
 *.parquet binary
 *.zip binary
+# arquivos de teste de SAS, Stata e SPSS: bytes exatos (o .por é texto, e o Git no Windows trocaria as quebras)
+*.sas7bdat binary
+*.xpt binary
+*.dta binary
+*.sav binary
+*.zsav binary
+*.por binary

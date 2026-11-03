@@ -5,7 +5,7 @@
 #pragma once
 #include <stdint.h>
 
-#define DC_ABI_VERSION 11
+#define DC_ABI_VERSION 12
 
 // DC_API: exportada ao compilar a biblioteca (DC_BUILDING), importada ao usá-la de outro código C/C++
 #if defined(_WIN32)
@@ -56,6 +56,18 @@ DC_API int dc_row_hash(int k, const int64_t* desc, int64_t start, int64_t end, i
 DC_API int64_t dc_diff_pairs(int k, const int64_t* left, const int64_t* right, const uint64_t* hl, const uint64_t* hr, const uint32_t* li, const uint32_t* ri, int64_t start, int64_t end, int verify, uint32_t* diff, int64_t* stats);
 DC_API int dc_row_hash_pieces(int k, int p, const int64_t* starts, const int64_t* descs, int first, uint64_t* out, int threads);
 DC_API int64_t dc_diff_pairs_all(int k, const int64_t* left, const int64_t* right, const uint64_t* hl, const uint64_t* hr, const uint32_t* li, const uint32_t* ri, int64_t n, int verify, uint32_t* diff, int64_t* stats, int threads);
+
+/* stat.cpp */
+DC_API int64_t dc_stat_open(const uint8_t* path, int64_t path_len, int format, const uint8_t* encoding, int64_t enc_len, int64_t chunk_bytes, int64_t max_rows, int flags);
+DC_API int dc_stat_schema(int64_t h);
+DC_API int64_t dc_stat_row_count(int64_t h);
+DC_API int dc_stat_column(int64_t h, int i, uint8_t* name, int64_t name_cap, uint8_t* fmt, int64_t fmt_cap, int64_t* info);
+DC_API int64_t dc_stat_next(int64_t h);
+DC_API int dc_stat_buffers(int64_t h, int col, int64_t* out);
+DC_API void dc_stat_release(int64_t h);
+DC_API int64_t dc_stat_error(int64_t h, uint8_t* buf, int64_t cap);
+DC_API void dc_stat_close(int64_t h);
+DC_API int dc_stat_encoding_supported(const uint8_t* name, int64_t len);
 
 #ifdef __cplusplus
 }

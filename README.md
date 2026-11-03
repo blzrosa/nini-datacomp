@@ -14,11 +14,14 @@ sem cópia.
 
 - **Memória sob controle:** a comparação anda em janelas pela chave, do tamanho que cabe no `memory_limit`
   (`"auto"` = 1/4 da RAM livre, até 2 GB). Tabelas maiores que a memória são comparadas sem problema.
-- **Rápida:** 10 milhões de linhas x 300 colunas em 33 s com 1 GB, onde o datacompolars levava 50 s e usava
+- **Rápida:** 10 milhões de linhas x 300 colunas em 32 s com 1 GB, onde o datacompolars levava 50 s e usava
   quase 2 GB ([números](#desempenho)).
 - **Sem surpresas:** igualdade exata pelo hash de linha (com `verify_hash=True` para conferir célula a célula),
   tolerâncias absolutas e relativas com a aritmética do Polars, texto sem caixa e sem espaços, nulos e NaN como no
   datacompolars.
+- **Lê o que você tem:** Parquet, CSV, JSON, Arrow, Avro, Excel e os arquivos do SAS (.sas7bdat, .xpt), do Stata
+  (.dta) e do SPSS (.sav, .zsav, .por), estes pelo [ReadStat](https://github.com/WizardMac/ReadStat) compilado na
+  própria biblioteca: nenhum pacote a mais.
 - **Leve:** só `polars`, `numpy` e `pydantic`; wheels prontos para Linux, Windows e macOS (x86-64 e ARM), sem
   compilador.
 
@@ -53,6 +56,52 @@ result.report(path="relatorio.html")  # ou em HTML (o formato sai da extensão)
 ```
 
 As opções vão como argumentos nomeados, como acima, ou num `dc.CompareOptions(...)` passado em `options=`.
+
+### Formatos
+
+O formato sai da extensão; uma pasta vira uma fonte só (com as subpastas; arquivos que começam com `.` ou `_` ficam
+de fora). Tudo o que não é Parquet é convertido uma vez para Parquet numa pasta temporária, aos pedaços (cada um com
+~1/16 do `memory_limit`), e a pasta some no fim da comparação.
+
+| formato | extensões | como é lido |
+|---|---|---|
+| Parquet | `.parquet`, `.pq` | direto |
+| CSV | `.csv`, `.tsv` | aos pedaços (`pl.scan_csv`); outra codificação é convertida para UTF-8 antes |
+| NDJSON, Arrow IPC | `.ndjson`, `.jsonl`, `.arrow`, `.ipc`, `.feather` | aos pedaços |
+| JSON, Avro | `.json`, `.avro` | inteiro na memória (o Polars só lê assim) |
+| Excel | `.xlsx`, `.xlsm`, `.xlsb`, `.xls`, `.ods` | inteiro; precisa do pacote `fastexcel` |
+| SAS | `.sas7bdat`, `.xpt` | aos pedaços, pelo ReadStat |
+| Stata | `.dta` | idem |
+| SPSS | `.sav`, `.zsav`, `.por` | idem |
+
+`read=dc.ReadOptions(...)` muda a leitura, para os dois lados ou um par `(esquerda, direita)`:
+
+```python
+dc.compare(
+    "sas/tops_adm.sas7bdat",
+    "lake/tops_adm/",
+    on="id",
+    cast="right",  # no SAS todo número é real (Float64); no lake o id costuma ser inteiro
+    read=(dc.ReadOptions(encoding="wlatin1"), dc.ReadOptions()),
+)
+```
+
+| opção | padrão | o que faz |
+|---|---|---|
+| `format` | pela extensão | força o formato (`"csv"`, `"sas"`, ...) |
+| `encoding` | do arquivo | CSV: a codificação (`"latin1"`, `"cp1252"`); SAS/Stata/SPSS: no lugar da que o arquivo declara (o .xpt não declara); aceita os nomes do SAS (`"wlatin1"`) |
+| `blank_strings_as_null` | `True` | SAS/Stata/SPSS: texto vazio vira nulo, que é como o SAS grava texto ausente |
+| `convert_dates` | `True` | SAS/Stata/SPSS: colunas com formato de data, data e hora ou hora (`DATE9.`, `DATETIME20.`, `%td`, `ADATE10`...) viram `Date`, `Datetime("us")` e `Time` |
+| `separator`, `has_header`, `decimal_comma`, `null_values` | CSV padrão | CSV (`.tsv` usa tabulação) |
+| `infer_schema_length`, `schema_overrides` | 10.000 linhas | CSV/JSON/Excel: como deduzir os tipos, ou os tipos de algumas colunas |
+| `sheet` | a primeira | Excel: nome ou número da planilha |
+| `csv_options` | `{}` | CSV: outros argumentos de `pl.scan_csv` |
+| `recursive` | `True` | pasta: procura também nas subpastas |
+| `temp_dir` | o do sistema | onde fica o Parquet temporário |
+
+Para ler fora da comparação: `dc.read_sas`, `dc.read_stata` e `dc.read_spss` devolvem um `pl.DataFrame`;
+`dc.scan_sas`, `dc.scan_stata` e `dc.scan_spss`, um `pl.LazyFrame` lido aos pedaços quando a consulta roda (cada
+`collect` lê o arquivo de novo).
 
 ### O resultado
 
@@ -121,8 +170,7 @@ Uma opção com nome errado é erro (`extra="forbid"`), em vez de ser ignorada.
 ### Tipos
 
 Inteiros, reais, booleano, texto (String, e Categorical e Enum comparados como texto), Date, Datetime, Duration,
-Time e Decimal. As fontes são Parquet (arquivo, pasta com subpastas, glob), `pl.DataFrame` e `pl.LazyFrame`. List,
-Struct, CSV e SAS ainda não: uma coluna de tipo não suportado levanta `UnsupportedTypeError`.
+Time e Decimal. List e Struct ainda não: uma coluna de tipo não suportado levanta `UnsupportedTypeError`.
 
 ## Desempenho
 
@@ -132,12 +180,12 @@ se o intervalo inteiro fica em até 1,10. As contagens (linhas e divergências p
 
 | linhas x colunas | nini-datacomp | pico | datacompolars | pico | razão (IC 95%) |
 |---|---:|---:|---:|---:|---|
-| 1M x 10 | 0,18 s | 401 MiB | 0,22 s | 698 MiB | 0,81 (0,75–0,88) |
-| 1M x 50 | 0,45 s | 724 MiB | 0,43 s | 1070 MiB | 1,05 (1,01–1,09) |
-| 1M x 300 | 2,72 s | 691 MiB | 3,35 s | 1709 MiB | 0,81 (0,72–0,91) |
-| 10M x 10 | 1,11 s | 768 MiB | 1,16 s | 1631 MiB | 0,96 (0,94–0,99) |
-| 10M x 50 | 5,10 s | 805 MiB | 4,26 s | 1679 MiB | 1,20 (1,05–1,35), inconclusivo |
-| 10M x 300 | 32,9 s | 814 MiB | 50,0 s | 1929 MiB | 0,66 (0,65–0,66) |
+| 1M x 10 | 0,11 s | 406 MiB | 0,22 s | 698 MiB | 0,51 (0,46–0,56) |
+| 1M x 50 | 0,37 s | 682 MiB | 0,43 s | 1070 MiB | 0,85 (0,82–0,89) |
+| 1M x 300 | 3,20 s | 561 MiB | 3,35 s | 1709 MiB | 0,95 (0,85–1,06) |
+| 10M x 10 | 0,76 s | 734 MiB | 1,16 s | 1631 MiB | 0,66 (0,63–0,68) |
+| 10M x 50 | 4,77 s | 633 MiB | 4,26 s | 1679 MiB | 1,12 (0,98–1,26), inconclusivo |
+| 10M x 300 | 31,9 s | 674 MiB | 50,0 s | 1929 MiB | 0,64 (0,62–0,65) |
 
 O nini-datacomp fica dentro do `memory_limit` em todos os casos; o datacompolars não tem orçamento e usa até o dobro.
 Os detalhes, com o caminho coluna a coluna (com tolerância), estão em
@@ -171,7 +219,7 @@ Mesma semântica; mudam os nomes, e o que era ajuste interno do motor vira um or
 | — | `threads`, `verify_hash` | threads dos kernels C++; conferir o hash de linha célula a célula |
 | `common_keys_only` | — | fase 6 |
 | `custom_comparators` | — | fase 6 |
-| `SourceOptions` | — | CSV e SAS na fase 6 |
+| `SourceOptions` | `read=ReadOptions(...)` | também um por lado; o SAS sem o extra `[sas]` (o ReadStat vem compilado) |
 | `result.fatal_errors` | `result.errors` | |
 | `result.column_stats` | `result.columns.mismatched()` | mesma ordem: da coluna que mais diverge para a que menos |
 | `result.samples` (lista de `SampleTable`) | `result.columns["c"].samples` | `pl.DataFrame`, mesmos cabeçalhos |

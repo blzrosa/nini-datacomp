@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(nini_datacomp LANGUAGES CXX)
+project(nini_datacomp LANGUAGES C CXX)
 
 # Biblioteca compartilhada com ABI em C (cpp/datacomp.h), carregada pelo Python via ctypes.
 # Gera libdatacomp.so (Linux), libdatacomp.dylib (macOS) ou datacomp.dll (Windows) dentro do pacote nini_datacomp.
@@ -19,8 +19,28 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 option(DC_NATIVE "Compilar para a CPU desta máquina (-march=native); nunca para wheels publicados" OFF)
 
+# ReadStat (C, licença MIT) para ler SAS, Stata e SPSS (cpp/stat.cpp): só os leitores, compilados dentro da
+# biblioteca, com um iconv próprio (third_party/shim: o mesmo resultado em qualquer sistema, nada a instalar no
+# Windows) e o descompressor do miniz no lugar do zlib (os .zsav). Nada disso é exportado.
+set(DC_TP "${CMAKE_CURRENT_SOURCE_DIR}/cpp/third_party")
+file(GLOB_RECURSE DC_READSTAT CONFIGURE_DEPENDS "${DC_TP}/readstat/*.c")
+add_library(dc_readstat OBJECT ${DC_READSTAT} "${DC_TP}/shim/iconv.c" "${DC_TP}/shim/zlib_shim.c"
+            "${DC_TP}/miniz/miniz_tinfl.c")
+set_target_properties(dc_readstat PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON POSITION_INDEPENDENT_CODE ON
+                      C_VISIBILITY_PRESET hidden)
+# o shim vem antes: o <iconv.h> e o <zlib.h> do ReadStat são os nossos, não os do sistema
+target_include_directories(dc_readstat BEFORE PRIVATE "${DC_TP}/shim" "${DC_TP}/readstat" "${DC_TP}/miniz")
+target_compile_definitions(dc_readstat PRIVATE HAVE_ZLIB=1)
+if(MSVC)
+  # código de terceiros: sem os avisos (o ReadStat usa as funções "inseguras" do CRT)
+  target_compile_options(dc_readstat PRIVATE /W0 /utf-8)
+  target_compile_definitions(dc_readstat PRIVATE _CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_DEPRECATE)
+else()
+  target_compile_options(dc_readstat PRIVATE -O2 -w)
+endif()
+
 file(GLOB DC_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/cpp/*.cpp")
-add_library(datacomp SHARED ${DC_SOURCES})
+add_library(datacomp SHARED ${DC_SOURCES} $<TARGET_OBJECTS:dc_readstat>)
 target_include_directories(datacomp PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/cpp")
 # o pool de threads do C++ (cpp/pool.cpp): -pthread no Linux; no Windows e no macOS, nada a mais
 set(THREADS_PREFER_PTHREAD_FLAG ON)
