@@ -19,7 +19,7 @@ from collections.abc import Collection, Iterator, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from itertools import pairwise
-from typing import Literal
+from typing import Any, Literal
 
 import numpy as np
 import polars as pl
@@ -391,25 +391,42 @@ def _normalize_text(
 
 NESTED = "__dc_nested__"  # prefixo das colunas aninhadas trocadas pelo hash do valor, lidas junto
 _NESTED_SEED = 0x6E696E69  # semente do hash do Polars nas colunas aninhadas (a mesma nos dois lados)
+_NESTED_NULL = 0x9E3779B97F4A7C15  # o hash de um valor nulo dentro de um aninhado (nulo != lista vazia)
+
+
+def _hash_value(e: pl.Expr, dtype: Any, *, unordered: bool = False) -> pl.Expr:  # Any: um tipo ou a classe dele
+    """O hash (UInt64) de um valor de qualquer tipo, por dentro: as listas viram a lista dos hashes dos elementos (e
+    só então o hash dela), e os Struct o Struct dos hashes dos campos. O Polars (ao menos até o 1.30) só sabe o hash
+    de uma lista de números, não de uma lista de listas, de textos ou de um Array. ``unordered``: os hashes dos
+    elementos da lista são ordenados antes ([1, 2] = [2, 1])."""
+    if isinstance(dtype, pl.Array):
+        e, dtype = e.cast(pl.List(dtype.inner)), pl.List(dtype.inner)
+    if isinstance(dtype, pl.List):
+        inner = _hash_value(pl.element(), dtype.inner)
+        hashed = e.list.eval(inner.sort() if unordered else inner).hash(seed=_NESTED_SEED)
+    elif isinstance(dtype, pl.Struct):
+        fields = [_hash_value(e.struct.field(f.name), f.dtype).alias(f.name) for f in dtype.fields]
+        hashed = pl.struct(fields).hash(seed=_NESTED_SEED)
+    else:
+        hashed = e.hash(seed=_NESTED_SEED)
+    return pl.when(e.is_null()).then(pl.lit(_NESTED_NULL, pl.UInt64)).otherwise(hashed)
 
 
 def _nested_as_hash(
     src: Source, columns: Sequence[str], *, unordered: Collection[str], keep_original: bool
 ) -> tuple[Source, dict[str, str]]:
-    """List, Array e Struct comparados pelo hash do valor inteiro (``Expr.hash`` do Polars, UInt64; nulo continua
-    nulo), que segue pelos mesmos kernels das outras colunas. Nas listas de ``unordered``, os elementos são ordenados
-    antes ([1, 2] = [2, 1]). Como em `_normalize_text`, com ``keep_original`` o hash vai numa coluna nova ao lado (as
-    amostras mostram o valor de verdade)."""
+    """List, Array e Struct comparados pelo hash do valor inteiro (`_hash_value`, UInt64; nulo continua nulo), que
+    segue pelos mesmos kernels das outras colunas. Nas listas de ``unordered``, a ordem dos elementos não conta. Como
+    em `_normalize_text`, com ``keep_original`` o hash vai numa coluna nova ao lado (as amostras mostram o valor de
+    verdade)."""
     schema = src.lazy.collect_schema()
     exprs, names = [], {}
     for c in columns:
         dtype = schema[c]
         if not dtype.is_nested():
             continue
-        value = pl.col(c)
-        if c in unordered and isinstance(dtype, pl.List):
-            value = value.list.eval(pl.element().sort())
-        hashed = pl.when(pl.col(c).is_null()).then(pl.lit(None, pl.UInt64)).otherwise(value.hash(seed=_NESTED_SEED))
+        value = _hash_value(pl.col(c), dtype, unordered=c in unordered and isinstance(dtype, pl.List))
+        hashed = pl.when(pl.col(c).is_null()).then(pl.lit(None, pl.UInt64)).otherwise(value)
         names[c] = NESTED + c if keep_original else c
         exprs.append(hashed.alias(names[c]))
     return (src.with_columns(exprs) if exprs else src), names
