@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from ctypes import c_double, c_float, c_int, c_int64, c_uint8, c_uint16, c_uint32, c_uint64, c_void_p
 
-ABI_VERSION = 14
+ABI_VERSION = 15
 
 # nome: (tipo de retorno, [tipos dos argumentos])
 SIGNATURES = {
@@ -28,8 +28,6 @@ SIGNATURES = {
     "dc_pool_stats": (None, [c_void_p]),
     "dc_parquet_row_groups": (c_int64, [c_void_p, c_int64, c_void_p, c_int64]),
     "dc_parquet_key_stats": (c_int64, [c_void_p, c_int64, c_void_p, c_int64, c_void_p, c_int64]),
-    "dc_parquet_error": (c_int64, [c_void_p, c_int64]),
-    "dc_parquet_read": (c_int64, [c_void_p, c_int64, c_void_p, c_int64, c_void_p, c_void_p, c_int64, c_int, c_void_p, c_void_p]),
     "dc_row_hash": (c_int, [c_int, c_void_p, c_int64, c_int64, c_int, c_void_p]),
     "dc_diff_pairs": (c_int64, [c_int, c_void_p, c_void_p, c_void_p, c_void_p, c_void_p, c_void_p, c_int64, c_int64, c_int, c_void_p, c_void_p]),
     "dc_row_hash_pieces": (c_int, [c_int, c_int, c_void_p, c_void_p, c_int, c_void_p, c_int]),

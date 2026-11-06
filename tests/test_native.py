@@ -20,6 +20,12 @@ def test_abi_version_matches() -> None:
     assert _native.lib().dc_abi_version() == ABI_VERSION
 
 
+def test_no_parquet_read_symbol() -> None:
+    lib = _native.lib()
+    assert not hasattr(lib, "dc_parquet_read")
+    assert lib.dc_abi_version() == 15
+
+
 def test_every_signature_is_exported() -> None:
     lib = _native.lib()
     for name in SIGNATURES:

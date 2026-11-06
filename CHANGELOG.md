@@ -14,7 +14,7 @@ Formato: [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/); versões: 
 - Suíte com `memory_limit`: `NINI_TEST_MEMORY_LIMIT=1GB` (ou `2GB`) faz o `"auto"` valer esse limite em todos os
   testes (`tests/conftest.py`); `NINI_TEST_PEAK_FILE` recebe o pico de cada worker. Resultado de `hc --all`: 1GB, todos
   os testes passam, pico 361 MiB; 2GB, todos passam, pico 370 MiB.
-- Leitor Parquet em C++ (`ReadOptions(reader="native")`, `core/parquet.read_native`, `cpp/parquet_read.cpp`): colunas
+- Leitor Parquet em C++ (`ReadOptions(reader="native")`, `core/parquet.read_native`, `cpp/parquet_read.cpp`), **removido no fim da fase 7 (veja "Removido" abaixo)**: colunas
   planas (INT32/INT64/FLOAT/DOUBLE/BOOLEAN, texto como `vu`, DATE, TIMESTAMP ms/us/ns sem fuso), PLAIN, dicionário e
   RLE, páginas v1 e v2, sem compressão, snappy (`cpp/snappy.cpp`, próprio), zstd (decodificador amalgamado v1.5.7 em
   `cpp/third_party/zstd`) e gzip (tinfl do miniz). Entregue ao Polars pelo PyCapsule, sem pyarrow e sem cópia; o que
@@ -24,11 +24,12 @@ Formato: [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/); versões: 
 - Conclusão do gate: o nativo perdeu em todos os casos medidos; não vale escrever leitor próprio, e o padrão continua
   `"polars"`. Alternativa descartada: a crate Rust do Parquet (é a mesma que o Polars já usa, sem ganho de velocidade, e
   traria toolchain de Rust, outro sistema de build e wheels mais difíceis); o ganho real (evitar reler janelas) já veio
-  do staging por janela. O pyarrow ficou instalado no `.venv` pelo `uv run --group bench`, então os testes de
-  dicionário e de páginas v2 passam a rodar de verdade no `hc` (ainda não verificado). **Em aberto (decisão da Nini):**
-  manter o leitor nativo como opção experimental ou removê-lo (veja `.claude/SPEC.md`).
-- `ABI_VERSION` 14 (`dc_parquet_read`, `dc_parquet_error`); `Exported` libera pelo `release` gravado na estrutura
-  (`wrap_filled`).
+  do staging por janela.
+- Removido o leitor nativo (`ReadOptions(reader=...)`, `core/parquet.py`, `cpp/parquet_read.cpp`, `cpp/snappy.*`, zstd
+  vendorizado): perdeu no gate e a Nini decidiu removê-lo. `ReadOptions(reader=...)` agora levanta `ValidationError`
+  (a opção nunca saiu em release). `cpp/thrift.hpp`, `cpp/memory.hpp`, `wrap_filled` e o `memory_limit` da suíte ficam.
+- `ABI_VERSION` 15 (some `dc_parquet_read`, `dc_parquet_error`; o 14 existiu só nesta fase e o 13 é de antes dela);
+  `Exported` libera pelo `release` gravado na estrutura (`wrap_filled`).
 
 ## [0.3.0] — 2026-11-03
 

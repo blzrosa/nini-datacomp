@@ -211,3 +211,8 @@ def test_compare_latin1_xpt() -> None:
     other = pl.DataFrame({"id": [1.0, 2.0, 3.0], "nome": ["José", "São Paulo", "açú"]})
     res = dc.compare(STAT / "latin1.xpt", other, "id", read=(ReadOptions(encoding="latin1"), ReadOptions()))
     assert res.is_match, res.errors
+
+
+def test_read_options_rejects_reader() -> None:
+    with pytest.raises(ValidationError):
+        ReadOptions(reader="native")  # type: ignore[call-arg]

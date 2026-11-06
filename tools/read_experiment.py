@@ -13,12 +13,8 @@ seis jeitos:
                   maduro; se ele não ganha com folga do Polars, um leitor próprio dificilmente ganharia
     polars_raw    o Polars lendo os mesmos dados gravados sem compressão: quanto do tempo é descompressão
     bytes_floor   só ler do disco (cache do sistema) os bytes dos row groups da janela: o piso de qualquer leitor
-    native        o leitor próprio em C++ (core/parquet.py, ReadOptions(reader="native")) nos arquivos em zstd, com os
-                  row groups escolhidos pelas estatísticas da chave e o filtro da faixa
-    native_raw    o mesmo leitor nos arquivos sem compressão (a comparação é com polars_raw)
 
-Gate do leitor próprio: se native (ou native_raw) demora mais que o Polars em algum caso, o padrão de
-ReadOptions.reader continua "polars".
+
 
 Sugestão de regra (a decisão é da Nini, com os números): vale escrever o leitor C++ se o arrow_cpp for pelo menos 1,5x
 mais rápido que o polars e a leitura for pelo menos 30% do tempo da comparação (``baseline.json``, fase 0b).
@@ -53,7 +49,7 @@ DATA = ROOT / "data" / "bench"
 DOCS = ROOT / "docs" / "benchmarks"
 BASELINE = DOCS / "baseline.json"
 WINDOW_CELLS = 30_000_000  # o mesmo orçamento das janelas automáticas do datacompolars (window_rows="auto")
-METHODS = ("polars", "arrow_cpp", "polars_raw", "bytes_floor", "native", "native_raw")
+METHODS = ("polars", "arrow_cpp", "polars_raw", "bytes_floor")
 # 10M x 300 fica de fora do padrão: são dezenas de GB, e a cópia sem compressão dobra isso
 CASES = ("1000000x10", "1000000x50", "1000000x300", "10000000x10", "10000000x50")
 SIDES = ("left", "right")
@@ -89,27 +85,6 @@ def read_arrow(folder: Path, lo: int, hi: int) -> int:
     field = ds.field(KEY)
     table = ds.dataset(str(folder), format="parquet").to_table(filter=(field >= lo) & (field < hi), use_threads=True)
     return table.num_rows
-
-
-def read_native_window(folder: Path, lo: int, hi: int) -> int:
-    """Como o pipeline lê uma janela com reader="native": row groups pela faixa da chave, leitor em C++, filtro."""
-    from nini_datacomp.core.parquet import read_native  # noqa: PLC0415 - só este experimento precisa dele
-    from nini_datacomp.io import key_stats  # noqa: PLC0415
-
-    total = 0
-    for path in sorted(folder.glob("*.parquet")):
-        groups = [
-            i
-            for i, g in enumerate(key_stats(path, KEY))
-            if g.rows > 0 and (g.min is None or g.max is None or (g.max >= lo and g.min < hi))
-        ]
-        if not groups:
-            continue
-        df = read_native(path, groups, None)
-        if df is None:
-            raise SystemExit(f"{path}: fora do suporte do leitor nativo")
-        total += df.filter((pl.col(KEY) >= lo) & (pl.col(KEY) < hi)).height
-    return total
 
 
 def byte_ranges(folder: Path, lo: int, hi: int) -> list[tuple[Path, int, int]]:
@@ -184,8 +159,6 @@ def measure(rows: int, cols: int, runs: int) -> dict[str, Any]:
         "arrow_cpp": every_window(read_arrow, root),
         "polars_raw": every_window(read_polars, raw),
         "bytes_floor": lambda: sum(read_bytes(r) for r in ranges),
-        "native": every_window(read_native_window, root),
-        "native_raw": every_window(read_native_window, raw),
     }
     out: dict[str, Any] = {"rows": rows, "cols": cols, "windows": len(plan)}
     for name in METHODS:
@@ -212,38 +185,24 @@ def report(results: list[dict[str, Any]]) -> None:
     DOCS.mkdir(parents=True, exist_ok=True)
     (DOCS / "leitura.json").write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
     lines = [
-        "# Fase 0c: leitura das janelas, Polars x leitor C++",
+        "# Fase 0c: leitura das janelas, Polars x leitor C++ do Arrow",
         "",
         "Segundos para ler todas as janelas dos dois lados (média ± meia largura do IC de 95%). `comparação` = tempo",
         "total do datacompolars 0.4.4 no caminho hash (`baseline.json`); `% leitura` = polars / comparação.",
-        '`native` é o leitor próprio (`ReadOptions(reader="native")`) nos arquivos em zstd e `native_raw` nos sem',
-        "compressão; `native / polars` e `native_raw / polars_raw` são razões de tempo (abaixo de 1: o nativo ganha).",
         "",
         "| linhas | colunas | janelas | polars | arrow_cpp | polars_raw | bytes_floor | polars / arrow_cpp "
-        "| comparação | % leitura | native | native / polars | native_raw | native_raw / polars_raw |",
-        "|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| comparação | % leitura |",
+        "|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
-    worst = 0.0
     for r in results:
         ratio = r["polars"]["mean"] / r["arrow_cpp"]["mean"]
         total = _compare_seconds(r["rows"], r["cols"])
         share = f"{100 * r['polars']['mean'] / total:.0f}%" if total else "—"
-        nz = r["native"]["mean"] / r["polars"]["mean"]
-        nr = r["native_raw"]["mean"] / r["polars_raw"]["mean"]
-        worst = max(worst, nz, nr)
         lines.append(
             f"| {r['rows']:,} | {r['cols']} | {r['windows']} | {_cell(r['polars'])} | {_cell(r['arrow_cpp'])} "
             f"| {_cell(r['polars_raw'])} | {_cell(r['bytes_floor'])} | {ratio:.2f}x "
-            f"| {f'{total:.3f}' if total else '—'} | {share} | {_cell(r['native'])} | {nz:.2f}x "
-            f"| {_cell(r['native_raw'])} | {nr:.2f}x |"
+            f"| {f'{total:.3f}' if total else '—'} | {share} |"
         )
-    verdict = (
-        "o leitor nativo empata ou ganha em todos os casos: pode virar o padrão."
-        if worst <= 1.0
-        else f"o leitor nativo perde em algum caso (pior razão {worst:.2f}x): o padrão de `ReadOptions.reader` "
-        'continua "polars".'
-    )
-    lines += ["", f"**Gate**: {verdict}"]
     (DOCS / "leitura.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"relatório: {(DOCS / 'leitura.md').relative_to(ROOT)}")
 

@@ -20,7 +20,6 @@ from collections.abc import Collection, Iterator, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from itertools import pairwise
-from pathlib import Path
 from typing import Any, Literal
 
 import numpy as np
@@ -31,9 +30,8 @@ from .core.comparators import Comparator
 from .core.compare import Tolerance, compare_column, compare_pairs, tolerance_for
 from .core.keys import Alignment, align_frames, align_keys, align_pieces
 from .core.memory import empty
-from .core.parquet import read_native
 from .core.rowhash import Part, diff_pairs, row_hash, row_hash_parts
-from .io import Source, SourceLike, key_stats, open_source, partition_source, row_groups
+from .io import Source, SourceLike, open_source, partition_source
 from .readers import ReadOptions
 from .windows import PARTITION_THRESHOLD, Plan, Window, plan_windows
 
@@ -141,10 +139,6 @@ class WindowReader:
         if src.frame is not None:  # em memória: filtrar o DataFrame não passa pelo planejador lazy
             frame = src.frame if pred is None else src.frame.filter(pred)
             return frame if columns is None else frame.select(columns)
-        if src.native and not src.steps:
-            native = _read_native(src, window, pred, columns, files=files, keys=self.keys, dtypes=self.dtypes)
-            if native is not None:
-                return native
         if files is not None:  # só os arquivos cuja faixa de chaves encosta na janela
             if files:
                 lf = src.scan([src.files[i] for i in files])
@@ -242,60 +236,6 @@ def _dispose(*frames: pl.DataFrame) -> None:
 
 def _drop(frames: tuple[pl.DataFrame, ...]) -> None:
     del frames
-
-
-def _window_row_groups(path: Path, key: str, window: Window, single_key: bool, use_stats: bool) -> list[int]:
-    """Os row groups do arquivo que podem ter linhas da janela: os cujo mínimo e máximo da primeira coluna da chave
-    encostam na faixa dela (a regra de `windows._read_amplification`), mais os sem estatísticas e, se a janela leva
-    as chaves nulas, os que têm nulos. Sem estatísticas utilizáveis (chave que não é inteira), todos os não vazios."""
-    if not use_stats:
-        return [i for i, rows in enumerate(row_groups(path)) if rows > 0]
-    lo = None if window.lo is None else window.lo[0]
-    hi = None if window.hi is None else window.hi[0]
-    out: list[int] = []
-    for i, g in enumerate(key_stats(path, key)):
-        if g.rows <= 0:
-            continue
-        unknown = g.min is None or g.max is None
-        nulls = window.with_nulls and (g.nulls is None or g.nulls > 0)
-        # com uma chave só, o limite de cima é exclusivo; com várias, a primeira coluna pode empatar com ele
-        inside = (lo is None or (g.max is not None and g.max >= lo)) and (
-            hi is None or (g.min is not None and (g.min < hi if single_key else g.min <= hi))
-        )
-        if unknown or nulls or inside:
-            out.append(i)
-    return out
-
-
-def _read_native(
-    src: Source,
-    window: Window,
-    pred: pl.Expr | None,
-    columns: list[str] | None,
-    *,
-    files: tuple[int, ...] | None,
-    keys: Sequence[str],
-    dtypes: Sequence[pl.DataType],
-) -> pl.DataFrame | None:
-    """A janela de uma fonte Parquet lida pelo leitor em C++ (`core/parquet.read_native`): só os row groups que podem
-    ter linhas dela, filtrados por ``pred``. None (o lado todo vai pelo Polars) se algum arquivo está fora do suporte,
-    se os arquivos têm schemas diferentes ou se nenhum row group serve."""
-    use_stats = dtypes[0].is_integer()
-    frames: list[pl.DataFrame] = []
-    for i in range(len(src.files)) if files is None else files:
-        path = src.files[i]
-        groups = _window_row_groups(path, keys[0], window, len(keys) == 1, use_stats)
-        if not groups:
-            continue
-        frame = read_native(path, groups, columns)
-        if frame is None or (frames and frame.schema != frames[0].schema):
-            return None
-        frames.append(frame)
-    if not frames:
-        return None
-    frame = frames[0] if len(frames) == 1 else pl.concat(frames, rechunk=False)
-    frame = frame if pred is None else frame.filter(pred)
-    return frame if columns is None else frame.select(columns)
 
 
 def _with_keys(columns: Sequence[str] | None, keys: Sequence[str]) -> list[str] | None:

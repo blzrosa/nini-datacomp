@@ -230,36 +230,3 @@ def test_mapping_interface() -> None:
     assert "a" in cols
     assert [c.name for c in cols.mismatched()] == ["b", "a"]
     assert cols["b"].rate == 1.0
-
-
-@pytest.mark.parametrize("order", ["sorted", "shuffled"])
-def test_reader_native_same_result(tmp_path: Any, order: str) -> None:
-    n = 12_000
-    left = pl.DataFrame(
-        {
-            "id": pl.int_range(n, eager=True),
-            "a": pl.int_range(n, eager=True) * 3,
-            "x": pl.Series([float(i) / 7 for i in range(n)]),
-            "s": [f"nome-{i % 50}" for i in range(n)],
-        }
-    )
-    right = left.filter(pl.col("id") % 97 != 0).with_columns(
-        a=pl.when(pl.col("id") % 31 == 0).then(pl.col("a") + 1).otherwise(pl.col("a")),
-        s=pl.when(pl.col("id") % 53 == 0).then(pl.lit("outro")).otherwise(pl.col("s")),
-    )
-    if order == "shuffled":
-        left, right = left.sample(fraction=1.0, shuffle=True, seed=1), right.sample(fraction=1.0, shuffle=True, seed=2)
-    paths = []
-    for name, df in (("left", left), ("right", right)):
-        path = tmp_path / f"{name}.parquet"
-        df.write_parquet(path, row_group_size=3_000, statistics=True)
-        paths.append(path)
-
-    def run(reader: Any) -> dict[str, Any]:
-        res = dc.compare(paths[0], paths[1], "id", read=dc.ReadOptions(reader=reader), window_rows=2_500)
-        out = res.to_dict()
-        for key in ("execution", "created_at"):
-            out.pop(key)
-        return out
-
-    assert run("native") == run("polars")
