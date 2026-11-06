@@ -51,6 +51,7 @@ dev = [
     # gabaritos e linha de base do benchmark (o datacompolars 0.4.4 é a referência) e dados de teste (nini-datagen)
     "datacompolars==0.4.4",
     "nini-datagen>=0.3.0",
+    "headroom-ai[proxy]>=0.42.0",
 ]
 # fase 0c (tools/read_experiment.py): o leitor C++ do Apache Arrow como referência. O pacote não usa o pyarrow.
 bench = ["pyarrow>=19"]

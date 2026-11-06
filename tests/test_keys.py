@@ -8,6 +8,7 @@ import math
 import random
 import struct
 from collections.abc import Sequence
+from dataclasses import replace
 from datetime import date, datetime
 from itertools import pairwise
 from typing import Any
@@ -19,7 +20,7 @@ import make_golden
 from cases import CASES
 from nini_datacomp import UnsupportedTypeError
 from nini_datacomp.core.arrow import import_column, import_frame
-from nini_datacomp.core.keys import Alignment, align_frames, align_keys, align_pieces, key_kind
+from nini_datacomp.core.keys import Alignment, align_frames, align_keys, align_pieces, descriptor, key_kind
 
 STRATEGIES = ("auto", "merge", "hash")
 
@@ -274,3 +275,23 @@ def test_align_pieces_reads_chunked_keys(dtype: Any) -> None:
     assert align_pieces([import_column(c) for c in shuffled.get_chunks()], [import_column(rs)]) is None
     nulls = pl.Series("k", [1, None, 3], dtype=dtype)
     assert align_pieces([import_column(nulls)], [import_column(nulls)]) is None
+
+
+@pytest.mark.parametrize("dtype", [pl.Int64, pl.Int32, pl.UInt16, pl.Float64, pl.Boolean, pl.String, pl.Decimal(10, 2)])
+@pytest.mark.parametrize("strategy", STRATEGIES)
+def test_empty_side_without_data_buffer(dtype: pl.DataType, strategy: Any) -> None:
+    # o Arrow permite buffer de valores nulo só em array vazio (o Polars nem usa: dá um endereço não nulo qualquer);
+    # o descritor leva 0 e o kernel não pode ler o endereço, porque não há linha nenhuma.
+    empty = replace(import_column(pl.Series("k", [], dtype)), data=None)
+    assert descriptor([empty])[0][0, 2] == 0
+    if dtype == pl.Boolean:
+        values: list[Any] = [True, None, False]
+    elif dtype == pl.String:
+        values = ["a" * 20, None, "b"]  # um texto fora da view: o lado cheio tem buffer de texto
+    else:
+        values = [1, None, 2]
+    other = import_column(pl.Series("k", values, dtype))
+    for left, right, only_left, only_right in ((empty, other, 0, 3), (other, empty, 3, 0), (empty, empty, 0, 0)):
+        a = align_keys([left], [right], strategy)
+        assert (a.common, a.only_left, a.only_right, a.dup_left, a.dup_right) == (0, only_left, only_right, 0, 0)
+        assert a.left.size == a.right.size == 0
