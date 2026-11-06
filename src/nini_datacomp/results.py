@@ -111,6 +111,8 @@ class ExecutionInfo:
     polars_version: str = ""
     total_seconds: float = 0.0
     timings: Mapping[str, float] = field(default_factory=dict)
+    read_amplification: tuple[float, float] = (math.nan, math.nan)  # por lado: linhas decodificadas / linhas do lado
+    notes: tuple[str, ...] = ()  # notas do plano (ex.: fontes reparticionadas por janela)
 
 
 @dataclass(frozen=True)

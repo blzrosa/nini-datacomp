@@ -12,12 +12,13 @@ faz com o ``memory_limit``.
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 from collections import defaultdict
 from collections.abc import Collection, Iterator, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from itertools import pairwise
 from typing import Any, Literal
 
@@ -30,8 +31,9 @@ from .core.compare import Tolerance, compare_column, compare_pairs, tolerance_fo
 from .core.keys import Alignment, align_frames, align_keys, align_pieces
 from .core.memory import empty
 from .core.rowhash import Part, diff_pairs, row_hash, row_hash_parts
-from .io import Source, SourceLike, open_source
-from .windows import Plan, Window, plan_windows
+from .io import Source, SourceLike, open_source, partition_source
+from .readers import ReadOptions
+from .windows import PARTITION_THRESHOLD, Plan, Window, plan_windows
 
 __all__ = [
     "Casting",
@@ -258,6 +260,9 @@ class RowCounts:
     timings: dict[str, float]
     window_bytes: int  # a maior janela em memória (os dois lados)
     memory_limit: int
+    # por lado: linhas decodificadas pelas janelas / linhas do lado (nan: sem estatística); as notas do plano
+    read_amplification: tuple[float, float] = (math.nan, math.nan)
+    notes: tuple[str, ...] = ()
     # só no compare_rows (o hash de linha); no count_rows ficam None / vazios
     mismatched: int | None = None  # linhas em comum com algum valor diferente nas colunas comparadas
     hash_collisions: int = 0  # pares de hash igual e valores diferentes, achados pelo verify_hash (estão em mismatched)
@@ -535,6 +540,7 @@ def _run(
     unordered_lists: Collection[str] = (),
     only_common_keys: bool = False,
     comparators: Mapping[str, Comparator] | None = None,
+    read_options: tuple[ReadOptions, ReadOptions] | None = None,
 ) -> RowCounts:
     t0 = time.perf_counter()
     keys = list(on)
@@ -561,29 +567,112 @@ def _run(
     plan = plan_windows(ls, rs, keys, memory_limit, window_rows=window_rows)
     plan_s = time.perf_counter() - t
 
-    groups = plan.split_columns(read) if cols is not None else None
-    # o que cada grupo lê: a coluna e, se o texto foi normalizado ao lado, a normalizada
-    reads = None if groups is None else [[n for c in g for n in dict.fromkeys((c, names.get(c, c)))] for g in groups]
-    reader = WindowReader(
-        ls, rs, plan, keys, dtypes, columns_left=read, columns_right=read, groups=reads, prefetch=prefetch,
-        engine=engine,
-    )  # fmt: skip
-    # as chaves repetidas fora da faixa em comum (only_common_keys) já contam: a comparação aborta como sem a opção
-    totals: dict[str, int] = defaultdict(int, dup_left=dup_out[0], dup_right=dup_out[1])
-    strategies: dict[str, int] = defaultdict(int)
-    spent: dict[str, float] = defaultdict(float)
+    t = time.perf_counter()
+    plan, ls, rs, owned = _repartition(plan, ls, rs, keys, read_options)
+    repartition_s = time.perf_counter() - t
+    try:
+        groups = plan.split_columns(read) if cols is not None else None
+        # o que cada grupo lê: a coluna e, se o texto foi normalizado ao lado, a normalizada
+        reads = (
+            None if groups is None else [[n for c in g for n in dict.fromkeys((c, names.get(c, c)))] for g in groups]
+        )
+        reader = WindowReader(
+            ls, rs, plan, keys, dtypes, columns_left=read, columns_right=read, groups=reads, prefetch=prefetch,
+            engine=engine,
+        )  # fmt: skip
+        # as chaves repetidas fora da faixa em comum (only_common_keys) já contam: a comparação aborta como sem a opção
+        totals: dict[str, int] = defaultdict(int, dup_left=dup_out[0], dup_right=dup_out[1])
+        strategies: dict[str, int] = defaultdict(int)
+        spent: dict[str, float] = defaultdict(float)
+        col_counts: dict[str, int] = dict.fromkeys(cols.compared if cols is not None else (), 0)
+        ctx = _Context(
+            keys=keys, tolerances=tolerances, names=names, counts=col_counts, details=details, samples=samples,
+            verify=verify_hash, threads=threads, spent=spent, comparators=dict(comparators or {}),
+        )  # fmt: skip
+        _consume(reader, groups, keys, ctx=ctx, threads=threads, totals=totals, strategies=strategies)
+
+        timings = _timings(
+            {"setup": setup_s, "plan": plan_s, "repartition": repartition_s, **spent, **reader.timer.seconds}, t0
+        )
+        aborted = bool(totals["dup_left"] or totals["dup_right"])
+        return RowCounts(
+            left_total=totals["left"] + outside[0],
+            right_total=totals["right"] + outside[1],
+            common=0 if aborted else totals["common"],
+            left_only=0 if aborted else totals["only_left"] + outside[0],
+            right_only=0 if aborted else totals["only_right"] + outside[1],
+            dup_left=totals["dup_left"],
+            dup_right=totals["dup_right"],
+            windows=len(plan.windows),
+            rows_per_window=plan.rows_per_window,
+            aligned_to_row_groups=plan.aligned_to_row_groups,
+            strategies=dict(strategies),
+            timings={k: round(v, 6) for k, v in timings.items()},
+            window_bytes=reader.window_bytes,
+            memory_limit=plan.memory_limit,
+            read_amplification=plan.read_amplification,
+            notes=tuple(plan.notes),
+            mismatched=None if cols is None else (0 if aborted else totals["mismatched"]),
+            hash_collisions=totals["collisions"],
+            hash_pieces=totals["pieces"],
+            column_groups=1 if groups is None else len(groups),
+            compared_columns=() if cols is None else tuple(cols.compared),
+            column_mismatches={} if cols is None or aborted or not details else col_counts,
+            samples={} if aborted else {c: pl.concat(frames) for c, frames in ctx.found.items() if frames},
+            type_mismatches=() if cols is None else tuple(cols.type_mismatches),
+            tolerance_columns=tuple(tolerances),
+        )
+
+    finally:
+        for src in owned:
+            src.cleanup()
+
+
+_STAGE_DIVISOR = 10  # o staging lê fatias de memory_limit / 10 (o pico real é ~3x a fatia: cópia, partição, escrita)
+
+
+def _repartition(
+    plan: Plan, ls: Source, rs: Source, keys: Sequence[str], read_options: tuple[ReadOptions, ReadOptions] | None
+) -> tuple[Plan, Source, Source, list[Source]]:
+    """Os lados Parquet fora de ordem com amplificação de leitura alta (`PARTITION_THRESHOLD`) regravados com um
+    arquivo por janela, numa passada: sem isso cada janela decodifica a fonte inteira. Devolve o plano e as fontes
+    novos e as fontes criadas aqui (quem chama apaga as pastas)."""
+    sides = [ls, rs]
+    files = list(plan.files)
+    owned: list[Source] = []
+    if not plan.aligned_to_row_groups and len(plan.windows) > 2:
+        opts = read_options if read_options is not None else (ReadOptions(), ReadOptions())
+        for i, src in enumerate(sides):
+            if src.is_parquet and plan.read_amplification[i] > PARTITION_THRESHOLD:
+                new, groups = partition_source(
+                    src, plan.windows, keys, opts[i], chunk_bytes=plan.memory_limit // _STAGE_DIVISOR
+                )
+                sides[i] = new
+                files[i] = groups
+                owned.append(new)
+    if owned:
+        plan = replace(plan, files=(files[0], files[1]), notes=[*plan.notes, "fontes reparticionadas por janela"])
+    return plan, sides[0], sides[1], owned
+
+
+def _consume(
+    reader: WindowReader,
+    groups: list[list[str]] | None,
+    keys: Sequence[str],
+    *,
+    ctx: _Context,
+    threads: int | None,
+    totals: dict[str, int],
+    strategies: dict[str, int],
+) -> None:
+    """Alinha e compara cada parte lida (somando em ``totals`` e ``strategies``; as divergências ficam no ``ctx``)."""
     state: _WindowState | None = None
     heights = (0, 0)
-    col_counts: dict[str, int] = dict.fromkeys(cols.compared if cols is not None else (), 0)
-    ctx = _Context(
-        keys=keys, tolerances=tolerances, names=names, counts=col_counts, details=details, samples=samples,
-        verify=verify_hash, threads=threads, spent=spent, comparators=dict(comparators or {}),
-    )  # fmt: skip
     for _, g, lf, rf in reader.pieces():
         t = time.perf_counter()
         if g == 0:  # a primeira parte da janela: alinha as chaves (todas as partes trazem as mesmas linhas)
             a = _align_window(lf, rf, keys, threads)
-            t = _lap(spent, "align", t)
+            t = _lap(ctx.spent, "align", t)
             aborted = _count(a, lf.height, rf.height, totals, strategies)
             hashing_now = groups is not None and not aborted and a.left.size > 0
             state = _WindowState(a, ctx) if hashing_now else None
@@ -601,34 +690,6 @@ def _run(
         # soltar a parte antes de pedir a próxima: senão, enquanto o leitor entrega a k+1 e já lê a k+2, esta k
         # continua viva pela variável do laço (três partes em memória, não duas; medido: ~+200 MB em 10M linhas)
         del lf, rf
-
-    timings = _timings({"setup": setup_s, "plan": plan_s, **spent, **reader.timer.seconds}, t0)
-    aborted = bool(totals["dup_left"] or totals["dup_right"])
-    return RowCounts(
-        left_total=totals["left"] + outside[0],
-        right_total=totals["right"] + outside[1],
-        common=0 if aborted else totals["common"],
-        left_only=0 if aborted else totals["only_left"] + outside[0],
-        right_only=0 if aborted else totals["only_right"] + outside[1],
-        dup_left=totals["dup_left"],
-        dup_right=totals["dup_right"],
-        windows=len(plan.windows),
-        rows_per_window=plan.rows_per_window,
-        aligned_to_row_groups=plan.aligned_to_row_groups,
-        strategies=dict(strategies),
-        timings={k: round(v, 6) for k, v in timings.items()},
-        window_bytes=reader.window_bytes,
-        memory_limit=plan.memory_limit,
-        mismatched=None if cols is None else (0 if aborted else totals["mismatched"]),
-        hash_collisions=totals["collisions"],
-        hash_pieces=totals["pieces"],
-        column_groups=1 if groups is None else len(groups),
-        compared_columns=() if cols is None else tuple(cols.compared),
-        column_mismatches={} if cols is None or aborted or not details else col_counts,
-        samples={} if aborted else {c: pl.concat(frames) for c, frames in ctx.found.items() if frames},
-        type_mismatches=() if cols is None else tuple(cols.type_mismatches),
-        tolerance_columns=tuple(tolerances),
-    )
 
 
 def _common_names(ls: Source, rs: Source) -> list[str]:

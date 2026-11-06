@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,7 @@ from make_data import Spec, generate, load_expected
 from nini_datacomp.errors import UnsupportedTypeError
 from nini_datacomp.io import open_source
 from nini_datacomp.pipeline import WindowReader, compare_rows, count_rows, prepare_keys
+from nini_datacomp.readers import ReadOptions, stage_partitioned
 from nini_datacomp.windows import plan_windows
 
 
@@ -291,3 +293,80 @@ def test_window_reader_keeps_two_windows(dataset: Path) -> None:
     assert [s[0] for s in seen] == [w.index for w in plan.windows]
     assert all(s[1] == ["id", "aa"] for s in seen)
     assert "read_wait" in reader.timer.seconds
+
+
+# ----------------------------------------------------------------------------- amplificação de leitura e staging
+def _write_pair(tmp_path: Path, *, shuffled: bool, n: int = 4000, groups: int = 100) -> tuple[Path, Path]:
+    """Duas tabelas em Parquet com vários row groups: a direita perde os 100 primeiros ids, ganha 100 novos no fim e
+    tem ``v`` diferente nos ids múltiplos de 7."""
+    left = pl.DataFrame({"id": range(n), "v": [i * 3 for i in range(n)]})
+    right = pl.DataFrame({"id": range(100, n + 100), "v": [i * 3 + (i % 7 == 0) for i in range(100, n + 100)]})
+    if shuffled:
+        left, right = left.sample(fraction=1.0, shuffle=True, seed=1), right.sample(fraction=1.0, shuffle=True, seed=2)
+    lp, rp = tmp_path / "left.parquet", tmp_path / "right.parquet"
+    left.write_parquet(lp, row_group_size=groups, statistics=True)
+    right.write_parquet(rp, row_group_size=groups, statistics=True)
+    return lp, rp
+
+
+def test_read_amplification_sorted(tmp_path: Path) -> None:
+    lp, rp = _write_pair(tmp_path, shuffled=False)
+    plan = plan_windows(open_source(lp), open_source(rp), ["id"], window_rows=1000)
+    assert len(plan.windows) > 2
+    assert plan.read_amplification == pytest.approx((1.0, 1.0), abs=0.05)
+
+
+def test_read_amplification_shuffled(tmp_path: Path) -> None:
+    lp, rp = _write_pair(tmp_path, shuffled=True)
+    plan = plan_windows(open_source(lp), open_source(rp), ["id"], window_rows=1000)
+    assert len(plan.windows) >= 4
+    assert all(a >= len(plan.windows) * 0.8 for a in plan.read_amplification)
+
+
+def test_read_amplification_without_statistics_is_nan() -> None:
+    df = pl.DataFrame({"id": range(4000)})
+    plan = plan_windows(open_source(df), open_source(df), ["id"], window_rows=1000)
+    assert all(math.isnan(a) for a in plan.read_amplification)  # não é Parquet
+
+
+def test_partitioned_staging_counts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import gc  # noqa: PLC0415
+    import tempfile  # noqa: PLC0415
+
+    temp = tmp_path / "tmp"
+    temp.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(temp))
+    lp, rp = _write_pair(tmp_path, shuffled=True)
+    got = compare_rows(lp, rp, ["id"], window_rows=1000)
+    gc.collect()
+    assert any("reparticionadas por janela" in n for n in got.notes)
+    assert list(temp.iterdir()) == []  # a pasta temporária sumiu
+    assert got.windows > 2
+
+    base = compare_rows(pl.read_parquet(lp), pl.read_parquet(rp), ["id"], window_rows=1000)  # em memória: sem staging
+    assert not any("reparticionadas" in n for n in base.notes)
+    for field in ("left_total", "right_total", "common", "left_only", "right_only", "mismatched"):
+        assert getattr(got, field) == getattr(base, field), field
+    assert (got.common, got.left_only, got.right_only) == (3900, 100, 100)
+    assert got.mismatched == len([i for i in range(100, 4000) if i % 7 == 0])
+
+
+def test_stage_partitioned_cleanup(tmp_path: Path) -> None:
+    lp, rp = _write_pair(tmp_path, shuffled=True)
+    src = open_source(lp)
+    plan = plan_windows(src, open_source(rp), ["id"], window_rows=1000)
+    staged = stage_partitioned(src, plan.windows, ["id"], ReadOptions(temp_dir=tmp_path))
+    assert len(staged.files) == len(plan.windows)
+    assert sum(pl.scan_parquet(f).select(pl.len()).collect().item() for f in staged.files) == 4000
+    folder = staged.path
+    assert folder.exists()
+    staged.cleanup()
+    assert not folder.exists()
+
+
+def test_partitioned_staging_skipped_when_aligned(tmp_path: Path) -> None:
+    lp, rp = _write_pair(tmp_path, shuffled=False)
+    got = compare_rows(lp, rp, ["id"], window_rows=1000)
+    assert got.aligned_to_row_groups
+    assert not any("reparticionadas" in n for n in got.notes)
+    assert got.read_amplification == pytest.approx((1.0, 1.0), abs=0.05)

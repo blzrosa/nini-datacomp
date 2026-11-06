@@ -21,14 +21,19 @@ from __future__ import annotations
 import codecs
 import tempfile
 from collections.abc import Iterator, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import polars as pl
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .core.stat import StatReader, encoding_supported, stat_family
+
+if TYPE_CHECKING:
+    from .io import Source
+    from .windows import Window
 
 __all__ = [
     "DEFAULT_STAGE_BYTES",
@@ -44,6 +49,7 @@ __all__ = [
     "scan_spss",
     "scan_stata",
     "stage",
+    "stage_partitioned",
 ]
 
 FileFormat = Literal["parquet", "csv", "ndjson", "json", "ipc", "avro", "excel", "sas", "stata", "spss"]
@@ -172,6 +178,8 @@ class Staged:
 
     files: list[Path] = field(default_factory=list)
     _dir: tempfile.TemporaryDirectory[str] | None = None
+    # só em `stage_partitioned`: os índices (em ``files``) dos arquivos de cada janela, na ordem das janelas
+    groups: list[tuple[int, ...]] = field(default_factory=list)
 
     @property
     def path(self) -> Path:
@@ -187,6 +195,65 @@ class Staged:
         if self._dir is not None:
             self._dir.cleanup()
             self._dir = None
+
+
+def stage_partitioned(
+    source: Source,
+    windows: Sequence[Window],
+    keys: Sequence[str],
+    options: ReadOptions,
+    *,
+    chunk_bytes: int = DEFAULT_STAGE_BYTES,
+) -> Staged:
+    """Regrava ``source`` (Parquet, com as conversões dela aplicadas) em uma pasta temporária com os arquivos de cada
+    janela (`Staged.groups` diz quais arquivos são de qual janela). Uma janela sem linhas não tem arquivo. Assim ler a
+    janela k abre só as linhas dela, não a fonte inteira (o Polars não pula row groups de uma fonte fora de ordem).
+    A fonte é lida em fatias de ~``chunk_bytes`` em memória (o ``sink_parquet`` em streaming passa de 4x o que lê: o
+    pico dele acompanha o tamanho do arquivo, não um limite), então cada janela fica com um arquivo por fatia."""
+    schema = source.scan(source.files[:1]).collect_schema()
+    dtypes = [schema[k] for k in keys]
+    index = _window_index([w.predicate(keys, dtypes) for w in windows])
+    rows = _row_group_rows(schema, chunk_bytes)
+    tmp = tempfile.TemporaryDirectory(prefix="nini-datacomp-", dir=options.temp_dir, ignore_cleanup_errors=True)
+    staged = Staged(_dir=tmp)
+    try:
+        found: list[list[Path]] = [[] for _ in windows]
+        for k, f in enumerate(source.files):
+            folder = staged.path / f"{k:05d}"
+            folder.mkdir()
+            lf = source.scan([f])
+            total = lf.select(pl.len()).collect().item()
+            for n, offset in enumerate(range(0, total, rows)):
+                df = lf.slice(offset, rows).with_columns(index).collect()
+                parts = df.partition_by("__w", as_dict=True, include_key=False)
+                del df
+                outs = {cast(int, i): folder / f"{cast(int, i):05d}-{n:06d}.parquet" for (i,) in parts}
+                with ThreadPoolExecutor() as pool:  # a escrita solta o GIL
+                    jobs = [
+                        pool.submit(part.write_parquet, outs[cast(int, i)], compression="lz4", statistics=True)
+                        for (i,), part in parts.items()
+                    ]
+                    for job in jobs:
+                        job.result()
+                for i, out in outs.items():
+                    found[i].append(out)
+        for files in found:
+            first = len(staged.files)
+            staged.files += files
+            staged.groups.append(tuple(range(first, len(staged.files))))
+    except BaseException:
+        staged.cleanup()
+        raise
+    return staged
+
+
+def _window_index(preds: Sequence[pl.Expr | None]) -> pl.Expr:
+    """A coluna ``__w``: o índice da janela de cada linha (as janelas não se sobrepõem; vale a primeira)."""
+    inside = [pl.lit(True) if p is None else p for p in preds]
+    index = pl.lit(len(inside) - 1, pl.Int32)
+    for i in range(len(inside) - 2, -1, -1):
+        index = pl.when(inside[i]).then(pl.lit(i, pl.Int32)).otherwise(index)
+    return index.alias("__w")
 
 
 def _row_group_rows(schema: pl.Schema, chunk_bytes: int) -> int:

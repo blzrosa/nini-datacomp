@@ -21,3 +21,7 @@ reports/
 # Dados gerados (tools/make_data.py) e resultados de benchmark
 benchmarks/
 amostras.md
+
+# Planejamento local do Claude
+.claude/SPEC.md
+.claude/HANDOFF.md

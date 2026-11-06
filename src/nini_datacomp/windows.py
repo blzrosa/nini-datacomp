@@ -22,6 +22,7 @@ ia numa janela só).
 from __future__ import annotations
 
 import ctypes
+import math
 import os
 import re
 import sys
@@ -59,6 +60,7 @@ IN_FLIGHT = 4.0
 # 3,5 e com 4 (a janela é a mesma); com 5 grupos (o que este fator dá ali), 700 ± 26 MB (até 718), ~7% mais lento.
 GROUP_IN_FLIGHT = 6.75
 KERNEL_BYTES_PER_ROW = 32  # pares (8), hashes dos dois lados (16) e tabelas, por linha da janela
+PARTITION_THRESHOLD = 3.0  # amplificação de leitura (Plan.read_amplification) acima da qual a fonte é reparticionada
 SAMPLE_ROWS = 10_000  # linhas lidas (só das colunas de largura variável) para medir os bytes por linha
 SAMPLE_KEYS = 200_000  # chaves da amostra que define as fronteiras quando a fonte não está em ordem
 _UNITS = {
@@ -200,6 +202,9 @@ class Plan:
     column_groups: int = 1  # em quantos grupos de colunas ler cada janela (1 = todas de uma vez)
     column_bytes: dict[str, float] = field(default_factory=dict)  # bytes por linha de cada coluna, os dois lados
     side_bytes: tuple[dict[str, float], dict[str, float]] = ({}, {})  # o mesmo, de cada lado (a chave inclusive)
+    # por lado: linhas que as janelas decodificam (somadas) / linhas do lado; 1.0 = cada linha lida uma vez, nan = sem
+    # estatística de row group para dizer
+    read_amplification: tuple[float, float] = (math.nan, math.nan)
 
     def frame_bytes(self, left: pl.DataFrame, right: pl.DataFrame) -> int:
         """O tamanho de uma parte lida (os dois lados), pelos bytes por linha do plano: sem o ``estimated_size`` do
@@ -529,6 +534,33 @@ def _footer_keys(source: Source, keys: Sequence[str]) -> _FooterKeys | None:
     return _FooterKeys(nulls, firsts, ranges)
 
 
+def _read_amplification(source: Source, keys: Sequence[str], windows: list[Window], rows: int) -> float:
+    """Linhas que as janelas decodificam somadas, sobre as ``rows`` do lado: para cada janela, as linhas dos row groups
+    cujo mínimo e máximo da primeira coluna da chave encostam na faixa dela (os demais o Polars pula). NaN sem
+    estatísticas (não é Parquet, chave que não é inteira ou foi convertida, rodapé sem mínimo e máximo)."""
+    if not source.is_parquet or rows <= 0:
+        return math.nan
+    name = _source_name(source, keys[0])
+    if name is None or not source.lazy.collect_schema()[keys[0]].is_integer():
+        return math.nan
+    groups: list[KeyStats] = []
+    for path in source.files:
+        groups += [g for g in key_stats(path, name) if g.rows > 0]
+    if any(g.min is None or g.max is None for g in groups):
+        return math.nan
+    # com uma chave só, o limite de cima é exclusivo; com várias, a primeira coluna pode empatar com ele
+    total = 0
+    for w in windows:
+        lo = None if w.lo is None else w.lo[0]
+        hi = None if w.hi is None else w.hi[0]
+        for g in groups:
+            assert g.min is not None
+            assert g.max is not None
+            if (lo is None or g.max >= lo) and (hi is None or (g.min < hi if len(keys) == 1 else g.min <= hi)):
+                total += g.rows
+    return total / rows
+
+
 def _all_groups(source: Source) -> list[int]:
     return [n for path in source.files for n in row_groups(path)]
 
@@ -585,7 +617,10 @@ def plan_windows(
     )
     rows = (nl, nr)
     extra = {"column_groups": groups, "column_bytes": column_bytes, "side_bytes": (cl, cr)}
-    single = Plan([Window(0, with_nulls=True)], rows_per_window, budget, bpr, rows, "left", notes=notes, **extra)
+    single = Plan(
+        [Window(0, with_nulls=True)], rows_per_window, budget, bpr, rows, "left", notes=notes, **extra,
+        read_amplification=(1.0, 1.0),
+    )  # fmt: skip
     if max(rows) <= rows_per_window:
         return single
 
@@ -621,4 +656,11 @@ def plan_windows(
     if not aligned:
         notes.append("fronteiras por amostra das chaves (fora do começo dos row groups)")
     files = (_window_files(ranges[0], windows), _window_files(ranges[1], windows))
-    return Plan(windows, rows_per_window, budget, bpr, rows, base_name, aligned, notes, files, **extra)
+    amplification = (
+        _read_amplification(left, keys, windows, nl),
+        _read_amplification(right, keys, windows, nr),
+    )
+    return Plan(
+        windows, rows_per_window, budget, bpr, rows, base_name, aligned, notes, files, **extra,
+        read_amplification=amplification,
+    )  # fmt: skip

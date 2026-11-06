@@ -13,14 +13,18 @@ import glob
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import polars as pl
 
 from ._native import lib, ptr
-from .readers import DEFAULT_STAGE_BYTES, SUFFIXES, FileFormat, ReadOptions, Staged, format_of, stage
+from .readers import DEFAULT_STAGE_BYTES, SUFFIXES, FileFormat, ReadOptions, Staged, format_of, stage, stage_partitioned
 
-__all__ = ["KeyStats", "Source", "SourceLike", "Where", "key_stats", "open_source", "row_groups"]
+if TYPE_CHECKING:
+    from .windows import Window
+
+__all__ = ["KeyStats", "Source", "SourceLike", "Where", "key_stats", "open_source", "partition_source", "row_groups"]
 
 SourceLike = str | Path | pl.DataFrame | pl.LazyFrame
 
@@ -89,6 +93,15 @@ class Source:
         """Apaga o Parquet temporário dos formatos convertidos (nada a fazer nos outros)."""
         if self.staged is not None:
             self.staged.cleanup()
+
+
+def partition_source(
+    source: Source, windows: Sequence[Window], keys: Sequence[str], options: ReadOptions, *, chunk_bytes: int
+) -> tuple[Source, list[tuple[int, ...]]]:
+    """``source`` regravada com um arquivo por janela (`readers.stage_partitioned`): a nova fonte (sem passos: as
+    conversões já estão nos arquivos) e, por janela, os índices dos arquivos dela. `Source.cleanup` apaga a pasta."""
+    staged = stage_partitioned(source, windows, keys, options, chunk_bytes=chunk_bytes)
+    return Source(_scan([str(f) for f in staged.files]), tuple(staged.files), staged=staged), staged.groups
 
 
 def _scan(files: list[str]) -> pl.LazyFrame:

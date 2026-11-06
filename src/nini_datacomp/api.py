@@ -121,6 +121,7 @@ def _compare(
         threads=opts.threads, abs_tol=abs_tol, rel_tol=rel_tol, ignore_case=opts.ignore_case,
         ignore_spaces=opts.ignore_whitespace, details=opts.details, samples=opts.samples, sources=(ls, rs),
         unordered_lists=unordered, only_common_keys=opts.only_common_keys, comparators=comparators,
+        read_options=opts.read_options,
     )  # fmt: skip
     if res.dup_left:
         errors.append(f"Duplicate join keys in the left table: {res.dup_left:,} surplus rows")
@@ -304,6 +305,8 @@ def _execution(res: RowCounts, opts: CompareOptions, *, details: bool, t0: float
         polars_version=polars_version,
         total_seconds=round(time.perf_counter() - t0, 6),
         timings=dict(res.timings),
+        read_amplification=res.read_amplification,
+        notes=res.notes,
     )
 
 

@@ -278,6 +278,7 @@ Studio com as ferramentas de C++; os wheels publicados usam o clang-cl).
 uv sync                                    # compila o C++ e instala o pacote no ambiente
 uv run python tools/check.py               # formata, lint, tipos e testes, parando no primeiro que falhar
 uv run python tools/check.py --then bench_hash   # ... e, se tudo passar, um benchmark
+uv run pytest -n auto                      # os testes em paralelo (pytest-xdist; o padrão é serial)
 uv run python tools/gen_bindings.py        # depois de mudar a assinatura de uma função C++
 ```
 

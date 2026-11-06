@@ -4,6 +4,15 @@ Formato: [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/); versões: 
 
 ## [Não lançado]
 
+### Fase 7 — Parquet fora de ordem e testes em paralelo
+- `pytest-xdist` no grupo dev (`pytest -n auto`, documentado no README; fora do `addopts`).
+- `Plan.read_amplification` (por lado) em `RowCounts`/`ExecutionInfo`, com `timings["repartition"]` e notas do plano.
+- Fonte Parquet fora de ordem com amplificação de leitura > 3 e mais de 2 janelas: regravada com arquivos por janela
+  (`stage_partitioned`), lendo a fonte em fatias de `memory_limit / 10`, com o pico dentro do `memory_limit`. Em
+  10M x 50 com chave embaralhada, 1GB: 65 s e 1,48 GiB sem o staging, 36 s e 0,73 GiB com ele (2GB: 24 s, 1,3 GiB).
+  Detalhes em `docs/benchmarks/fase7.md`.
+- Leitor Parquet em C++ (`reader="native"`): não iniciado.
+
 ## [0.3.0] — 2026-11-03
 
 ### Testes do datacompolars portados
