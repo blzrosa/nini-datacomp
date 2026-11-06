@@ -1,5 +1,5 @@
-// thrift.hpp -- leitor do protocolo compacto do Thrift, compartilhado por parquet_meta.cpp (rodapé: linhas e
-// estatísticas) e parquet_read.cpp (rodapé e cabeçalhos de página). Só lê e pula; nada é interpretado aqui.
+// thrift.hpp -- leitor do protocolo compacto do Thrift, usado por parquet_meta.cpp (rodapé: linhas e
+// estatísticas). Só lê e pula; nada é interpretado aqui.
 //
 // Protocolo compacto do Thrift: cabeçalho de campo = 1 byte (delta do id nos 4 bits altos, tipo nos 4 baixos; delta 0
 // = id em varint zigzag a seguir); inteiros em varint zigzag; binário = tamanho em varint + bytes; lista = 1 byte

@@ -97,7 +97,7 @@ dc.compare(
 | `sheet` | a primeira | Excel: nome ou número da planilha |
 | `csv_options` | `{}` | CSV: outros argumentos de `pl.scan_csv` |
 | `recursive` | `True` | pasta: procura também nas subpastas |
-| `temp_dir` | o do sistema | onde fica o Parquet temporário |
+| `temp_dir` | o do sistema | onde fica o Parquet temporário (também o do staging por janela) |
 
 Para ler fora da comparação: `dc.read_sas`, `dc.read_stata` e `dc.read_spss` devolvem um `pl.DataFrame`;
 `dc.scan_sas`, `dc.scan_stata` e `dc.scan_spss`, um `pl.LazyFrame` lido aos pedaços quando a consulta roda (cada
@@ -112,7 +112,7 @@ Para ler fora da comparação: `dc.read_sas`, `dc.read_stata` e `dc.read_spss` d
 | `columns` | mapeamento por nome das colunas comparadas (`dtype`, `mismatches`, `rate`, `samples`, `tolerance`), mais `left_only`, `right_only`, `type_mismatches` e `mismatched()` (da que mais diverge para a que menos) |
 | `errors`, `aborted` | erros fatais (chave que falta, chave de tipos diferentes, chave repetida): ficam aqui, sem exceção |
 | `warnings` | avisos (nenhuma coluna além da chave, tolerância para uma coluna que não existe) |
-| `execution` | janelas, grupos de colunas, memória, tempo por etapa, versões |
+| `execution` | janelas, grupos de colunas, memória, tempo por etapa, versões, `read_amplification` e `notes` (veja [Chave fora de ordem](#chave-fora-de-ordem-e-disco-temporário)) |
 | `report(...)`, `to_dict()`, `to_json()` | o relatório e a forma serializável |
 
 ### O relatório
@@ -160,7 +160,7 @@ SAMPLE DIFFERING ROWS
 | `ignore_whitespace`, `ignore_case` | `False` | texto comparado sem espaços em branco e/ou em minúsculas |
 | `details` | `True` | divergências por coluna e amostras (`False`: só as contagens de linhas) |
 | `samples` | `5` | linhas divergentes guardadas por coluna, na ordem da chave |
-| `memory_limit` | `"auto"` | orçamento de memória: bytes ou texto (`"512MB"`, `"2GB"`, `"1.5GiB"`) |
+| `memory_limit` | `"auto"` | orçamento de memória: bytes ou texto (`"512MB"`, `"2GB"`, `"1.5GiB"`); o pico fica dentro dele, também com o staging por janela |
 | `window_rows` | `None` | avançado: linhas por janela, no lugar do cálculo pelo `memory_limit` |
 | `threads` | `None` | threads dos kernels C++ (padrão: todos os núcleos) |
 | `verify_hash` | `False` | confere as colunas exatas célula a célula em todos os pares, além do hash |
@@ -239,6 +239,39 @@ e `MIMALLOC_RESET_DELAY=10`) para devolver em 10 ms a memória que libera: sem i
 o pico chega a ~1,9x; devolvendo na hora, cada janela pede de novo ao sistema a memória da anterior (até ~30% mais
 lento). Se o Polars já tiver sido importado, não dá mais para configurar e o pacote avisa com `AllocatorWarning`; dá
 para definir as variáveis antes de iniciar o Python, ou silenciar com `NINI_DATACOMP_ALLOCATOR=0`.
+
+## Chave fora de ordem e disco temporário
+
+Com o Parquet ordenado pela chave, cada janela lê só os row groups que cabem nela. Se a fonte está **fora de ordem**
+(chave embaralhada), o Polars não consegue pular row groups e cada janela decodifica a fonte inteira. Isso aparece no
+resultado como **amplificação de leitura**: `result.execution.read_amplification` é, por lado `(esquerda, direita)`, as
+linhas decodificadas divididas pelas linhas do lado (1,0 = cada linha é lida uma vez; 21,0 = a fonte foi lida 21
+vezes); é o valor do plano, antes do staging. Está em `execution`, não em `to_dict()`/`to_json()`. `nan` quando não foi medida.
+
+Quando a fonte é Parquet, a amplificação passa de 3 e há mais de 2 janelas, o nini-datacomp faz o **staging por
+janela**: regrava a fonte numa pasta temporária, com um arquivo por janela (e por fatia lida), numa só passada. Depois,
+ler a janela k abre só os arquivos dela. A pasta fica no `temp_dir` do `ReadOptions` (o do sistema por padrão), ocupa
+em disco algo próximo do tamanho da fonte (por lado reparticionado) e some no fim da comparação, mesmo com erro. A
+fonte é lida em fatias de `memory_limit / 10`, então o pico continua dentro do orçamento. O que aconteceu fica em
+`result.execution.notes` (`"fontes reparticionadas por janela"`).
+
+```python
+result = dc.compare("a/", "b/", on="id", memory_limit="1GB")
+result.execution.read_amplification  # (41.0, 41.0): o valor medido no plano, antes do staging
+result.execution.notes  # inclui "fontes reparticionadas por janela" quando o staging entrou
+result.execution.timings["repartition"]  # segundos gastos regravando
+```
+
+Medido em 10M linhas x 50 colunas com a chave embaralhada (mesma permutação nos dois lados):
+
+| `memory_limit` | janelas | tempo | pico | dentro do limite |
+|---|---:|---:|---:|:---:|
+| `"1GB"` (954 MiB) | 41 | 36 s | 734 MiB | sim |
+| `"2GB"` (1907 MiB) | 21 | 24 s | 1353 MiB | sim |
+
+Sem o staging, o mesmo caso com 1 GB levava 65 s e passava do limite (1,48 GiB). Mais memória significa menos
+janelas e menos fatias, então é mais rápido. Detalhes em
+[`docs/benchmarks/fase7.md`](https://github.com/blzrosa/nini-datacomp/blob/main/docs/benchmarks/fase7.md).
 
 ## Vindo do datacompolars
 

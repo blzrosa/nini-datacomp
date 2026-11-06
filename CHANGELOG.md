@@ -4,6 +4,21 @@ Formato: [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/); versões: 
 
 ## [Não lançado]
 
+## [0.4.0] — 2026-11-06
+
+Versão menor (0.3.0 → 0.4.0): traz recurso novo (staging por janela, `read_amplification`, `notes`) e não quebra
+nada que já saiu em release; o leitor Parquet nativo foi adicionado e removido dentro desta fase, sem nunca sair numa
+versão, então a remoção não é breaking.
+
+### Para quem usa
+- Parquet com a chave fora de ordem e muitas janelas agora é regravado numa pasta temporária (`ReadOptions.temp_dir`),
+  um arquivo por janela, quando a amplificação de leitura passa de 3: 10M x 50 com 1GB, de 65 s e 1,48 GiB (acima do
+  limite) para 36 s e pico de 734 MiB; com 2GB, 24 s e 1353 MiB.
+- `result.execution.read_amplification` (por lado) e `result.execution.notes`, mais `timings["repartition"]`.
+- `memory_limit` respeitado também no staging (fatias de `memory_limit / 10`).
+- `ABI_VERSION` 15 (a biblioteca compilada muda; os wheels trazem a nova).
+- `ReadOptions(reader=...)` levanta `ValidationError` (a opção nunca saiu em release).
+
 ### Fase 7 — Parquet fora de ordem e testes em paralelo
 - `pytest-xdist` no grupo dev (`pytest -n auto`, documentado no README; fora do `addopts`).
 - `Plan.read_amplification` (por lado) em `RowCounts`/`ExecutionInfo`, com `timings["repartition"]` e notas do plano.
