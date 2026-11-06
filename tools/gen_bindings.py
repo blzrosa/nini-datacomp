@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CPP = ROOT / "cpp"
 HEADER = CPP / "datacomp.h"
 SIGS = ROOT / "src" / "nini_datacomp" / "_signatures.py"
-ABI_VERSION = 13
+ABI_VERSION = 14
 
 C_TYPES = {"u64": "uint64_t", "u32": "uint32_t", "u16": "uint16_t", "u8": "uint8_t", "i64": "int64_t", "i32": "int32_t"}
 CTYPES = {
@@ -99,6 +99,9 @@ def signatures(funcs) -> str:
     imp = "from ctypes import c_double, c_float, c_int, c_int64, c_uint8, c_uint16, c_uint32, c_uint64, c_void_p"
     lines = [
         doc,
+        "",
+        "# ruff: noqa",  # o hc passa os arquivos alterados ao ruff mesmo com o extend-exclude do pyproject
+        "# fmt: off",
         "from __future__ import annotations",
         "",
         imp,

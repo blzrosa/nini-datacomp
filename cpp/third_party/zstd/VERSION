@@ -1,0 +1,8 @@
+zstd v1.5.7 (decodificador amalgamado, só descompressão)
+Origem: https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz
+sha256 do tarball: eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3 (conferido com o .sha256 da release)
+Gerado em build/single_file_libs com:
+  python combine.py -r ../../lib -x legacy/zstd_legacy.h -k zstd.h -o zstddeclib.c zstddeclib-in.c
+zstd.h e zstd_errors.h: copiados de lib/. Licença: BSD (arquivo LICENSE; o zstd é BSD ou GPLv2, usado aqui sob a BSD).
+Única edição à mão no zstddeclib.c: a linha 4231 foi de #include "../zstd.h" para #include "zstd.h" (o -k deixa o include
+sem inlinar, e o zstd.h fica ao lado do .c).

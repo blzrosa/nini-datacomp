@@ -11,7 +11,24 @@ Formato: [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/); versões: 
   (`stage_partitioned`), lendo a fonte em fatias de `memory_limit / 10`, com o pico dentro do `memory_limit`. Em
   10M x 50 com chave embaralhada, 1GB: 65 s e 1,48 GiB sem o staging, 36 s e 0,73 GiB com ele (2GB: 24 s, 1,3 GiB).
   Detalhes em `docs/benchmarks/fase7.md`.
-- Leitor Parquet em C++ (`reader="native"`): não iniciado.
+- Suíte com `memory_limit`: `NINI_TEST_MEMORY_LIMIT=1GB` (ou `2GB`) faz o `"auto"` valer esse limite em todos os
+  testes (`tests/conftest.py`); `NINI_TEST_PEAK_FILE` recebe o pico de cada worker. Resultado de `hc --all`: 1GB, todos
+  os testes passam, pico 361 MiB; 2GB, todos passam, pico 370 MiB.
+- Leitor Parquet em C++ (`ReadOptions(reader="native")`, `core/parquet.read_native`, `cpp/parquet_read.cpp`): colunas
+  planas (INT32/INT64/FLOAT/DOUBLE/BOOLEAN, texto como `vu`, DATE, TIMESTAMP ms/us/ns sem fuso), PLAIN, dicionário e
+  RLE, páginas v1 e v2, sem compressão, snappy (`cpp/snappy.cpp`, próprio), zstd (decodificador amalgamado v1.5.7 em
+  `cpp/third_party/zstd`) e gzip (tinfl do miniz). Entregue ao Polars pelo PyCapsule, sem pyarrow e sem cópia; o que
+  está fora do suporte cai no Polars sem aviso. **Gate (`docs/benchmarks/leitura.md`): o nativo demora 1,46x a 1,72x o
+  tempo do Polars em zstd e 1,88x a 2,47x nos arquivos sem compressão (1M x 10/50/300 e 10M x 10; o 10M x 50 não coube
+  no disco). O padrão continua `"polars"`.**
+- Conclusão do gate: o nativo perdeu em todos os casos medidos; não vale escrever leitor próprio, e o padrão continua
+  `"polars"`. Alternativa descartada: a crate Rust do Parquet (é a mesma que o Polars já usa, sem ganho de velocidade, e
+  traria toolchain de Rust, outro sistema de build e wheels mais difíceis); o ganho real (evitar reler janelas) já veio
+  do staging por janela. O pyarrow ficou instalado no `.venv` pelo `uv run --group bench`, então os testes de
+  dicionário e de páginas v2 passam a rodar de verdade no `hc` (ainda não verificado). **Em aberto (decisão da Nini):**
+  manter o leitor nativo como opção experimental ou removê-lo (veja `.claude/SPEC.md`).
+- `ABI_VERSION` 14 (`dc_parquet_read`, `dc_parquet_error`); `Exported` libera pelo `release` gravado na estrutura
+  (`wrap_filled`).
 
 ## [0.3.0] — 2026-11-03
 

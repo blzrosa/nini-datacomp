@@ -98,6 +98,7 @@ dc.compare(
 | `csv_options` | `{}` | CSV: outros argumentos de `pl.scan_csv` |
 | `recursive` | `True` | pasta: procura também nas subpastas |
 | `temp_dir` | o do sistema | onde fica o Parquet temporário |
+| `reader` | `"polars"` | Parquet: `"native"` lê as janelas com o leitor próprio em C++ (colunas planas de tipos básicos, páginas v1/v2, PLAIN e dicionário; snappy, zstd, gzip ou sem compressão). Tudo fora disso, e as fontes com renomeação ou conversão, cai no Polars sem aviso. Continua `"polars"` por padrão porque o leitor próprio ficou mais lento que o Polars no benchmark (`docs/benchmarks/leitura.md`) |
 
 Para ler fora da comparação: `dc.read_sas`, `dc.read_stata` e `dc.read_spss` devolvem um `pl.DataFrame`;
 `dc.scan_sas`, `dc.scan_stata` e `dc.scan_spss`, um `pl.LazyFrame` lido aos pedaços quando a consulta roda (cada

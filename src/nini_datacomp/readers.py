@@ -130,6 +130,10 @@ class ReadOptions(BaseModel):
         default_factory=dict, description="CSV: outros argumentos de pl.scan_csv (quote_char, skip_rows...)."
     )
     recursive: bool = Field(default=True, description="Pasta: procura arquivos também nas subpastas.")
+    reader: Literal["polars", "native"] = Field(
+        default="polars",
+        description="Parquet: quem lê as janelas. 'native' é o leitor em C++ (cai no Polars se não suportar).",
+    )
     temp_dir: Path | None = Field(
         default=None, description="Onde guardar o Parquet temporário dos formatos convertidos (padrão: o do sistema)."
     )

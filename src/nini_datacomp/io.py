@@ -52,6 +52,7 @@ class Source:
     # o que se aplica depois de ler (em toda leitura de `scan`): with_columns (conversões de tipo) e renomeações
     steps: tuple[Step, ...] = ()
     staged: Staged | None = None  # a pasta temporária com o Parquet convertido (formatos que não são Parquet)
+    native: bool = False  # ReadOptions(reader="native"): ler os row groups com o leitor em C++ (core/parquet.py)
 
     @property
     def is_parquet(self) -> bool:
@@ -166,7 +167,7 @@ def open_source(
         files = _files(str(source), read)
         fmt = _format(files, read)
         if fmt == "parquet":
-            return Source(_scan([str(f) for f in files]), tuple(files))
+            return Source(_scan([str(f) for f in files]), tuple(files), native=read.reader == "native")
         staged = stage(files, fmt, read, chunk_bytes=stage_bytes)
         return Source(_scan([str(f) for f in staged.files]), tuple(staged.files), staged=staged)
     raise TypeError(f"fonte não suportada: {type(source).__name__} (use caminho, pl.DataFrame ou pl.LazyFrame)")

@@ -9,3 +9,12 @@ Inclui, compilados na biblioteca nativa, para ler SAS, Stata e SPSS:
   colaboradores: cpp/third_party/readstat (só os leitores; a versão está em VERSION, a licença em LICENSE).
 - miniz (https://github.com/richgel999/miniz), licença MIT, Copyright 2013-2014 RAD Game Tools and Valve Software e
   2010-2014 Rich Geldreich and Tenacious Software LLC: cpp/third_party/miniz (só o descompressor, para os .zsav).
+
+Inclui, compilados na biblioteca nativa, para ler Parquet (`reader="native"`):
+
+- Zstandard (https://github.com/facebook/zstd), licença BSD, Copyright (c) Meta Platforms, Inc. and affiliates:
+  cpp/third_party/zstd (só o descompressor amalgamado oficial da v1.5.7; a origem está em VERSION, a licença em LICENSE).
+- O formato do snappy (https://github.com/google/snappy, licença BSD, Copyright 2011 Google Inc.): cpp/snappy.cpp é um
+  descompressor escrito a partir do format_description.txt oficial, sem código do snappy.
+- Polars (https://github.com/pola-rs/polars), licença MIT, Copyright (c) 2020 Ritchie Vink e colaboradores:
+  cpp/parquet_read.cpp é uma tradução para C++ da lógica do leitor Parquet do polars-parquet (Rust), não uma cópia de código.

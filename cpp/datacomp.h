@@ -5,7 +5,7 @@
 #pragma once
 #include <stdint.h>
 
-#define DC_ABI_VERSION 13
+#define DC_ABI_VERSION 14
 
 // DC_API: exportada ao compilar a biblioteca (DC_BUILDING), importada ao usá-la de outro código C/C++
 #if defined(_WIN32)
@@ -53,6 +53,10 @@ DC_API void dc_pool_stats(int64_t* out);
 /* parquet_meta.cpp */
 DC_API int64_t dc_parquet_row_groups(const uint8_t* footer, int64_t n, int64_t* rows, int64_t cap);
 DC_API int64_t dc_parquet_key_stats(const uint8_t* footer, int64_t n, const uint8_t* name, int64_t name_len, int64_t* out, int64_t cap);
+
+/* parquet_read.cpp */
+DC_API int64_t dc_parquet_error(uint8_t* buf, int64_t cap);
+DC_API int64_t dc_parquet_read(const uint8_t* path, int64_t path_len, const int32_t* row_groups, int64_t n_rg, const uint8_t* names, const int64_t* name_lens, int64_t n_col, int threads, uint8_t* schemas, uint8_t* arrays);
 
 /* rowhash.cpp */
 DC_API int dc_row_hash(int k, const int64_t* desc, int64_t start, int64_t end, int first, uint64_t* out);

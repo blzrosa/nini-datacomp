@@ -36,6 +36,7 @@ __all__ = [
     "export_array",
     "import_batch",
     "import_series",
+    "wrap_filled",
 ]
 
 
@@ -151,8 +152,8 @@ def _destroy_schema_capsule(cap: int) -> None:
         p = _capsule_get_raw(cap, _SCHEMA_NAME)
         if p:
             s = ArrowSchema.from_address(p)
-            if s.release:  # ninguém tomou posse: libera aqui
-                _release_schema(ctypes.pointer(s))
+            if s.release:  # ninguém tomou posse: libera aqui, pelo release gravado na estrutura (Python ou C++)
+                s.release(ctypes.pointer(s))
             with _live_lock:
                 _in_capsule.pop(p, None)
     except Exception:  # um destrutor não pode levantar exceção
@@ -165,7 +166,7 @@ def _destroy_array_capsule(cap: int) -> None:
         if p:
             a = ArrowArray.from_address(p)
             if a.release:
-                _release_array(ctypes.pointer(a))
+                a.release(ctypes.pointer(a))
             with _live_lock:
                 _in_capsule.pop(p, None)
     except Exception:  # idem
@@ -212,10 +213,16 @@ class Exported:
 
     def __del__(self) -> None:  # nunca entregue: solta os buffers
         if not self._used:
-            if self._schema.release:
-                _release_schema(ctypes.pointer(self._schema))
+            if self._schema.release:  # o release gravado na estrutura, seja do Python ou do C++
+                self._schema.release(ctypes.pointer(self._schema))
             if self._array.release:
-                _release_array(ctypes.pointer(self._array))
+                self._array.release(ctypes.pointer(self._array))
+
+
+def wrap_filled(schema: ArrowSchema, array: ArrowArray) -> Exported:
+    """Estruturas que o C++ preencheu, com o próprio ``release``: entrega ao Polars como ``export_array``. Quem
+    as segura (aqui) mantém a memória das estruturas viva até o release."""
+    return Exported(schema, array)
 
 
 def export_array(fmt: bytes, length: int, buffers: Sequence[Any], null_count: int) -> Exported:

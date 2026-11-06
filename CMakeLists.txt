@@ -39,9 +39,20 @@ else()
   target_compile_options(dc_readstat PRIVATE -O2 -w)
 endif()
 
+# zstd (BSD, v1.5.7): só o descompressor amalgamado oficial (cpp/third_party/zstd/VERSION), para os Parquet em zstd.
+add_library(dc_zstd OBJECT "${DC_TP}/zstd/zstddeclib.c")
+set_target_properties(dc_zstd PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON POSITION_INDEPENDENT_CODE ON
+C_VISIBILITY_PRESET hidden)
+target_include_directories(dc_zstd PRIVATE "${DC_TP}/zstd")
+if(MSVC)
+target_compile_options(dc_zstd PRIVATE /W0 /utf-8)
+target_compile_definitions(dc_zstd PRIVATE _CRT_SECURE_NO_WARNINGS)
+else()
+target_compile_options(dc_zstd PRIVATE -O2 -w)
+endif()
 file(GLOB DC_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/cpp/*.cpp")
-add_library(datacomp SHARED ${DC_SOURCES} $<TARGET_OBJECTS:dc_readstat>)
-target_include_directories(datacomp PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/cpp")
+add_library(datacomp SHARED ${DC_SOURCES} $<TARGET_OBJECTS:dc_readstat> $<TARGET_OBJECTS:dc_zstd>)
+target_include_directories(datacomp PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/cpp" "${DC_TP}/zstd")
 # o pool de threads do C++ (cpp/pool.cpp): -pthread no Linux; no Windows e no macOS, nada a mais
 set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)

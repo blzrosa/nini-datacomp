@@ -11,6 +11,7 @@
 // desperdiça mais que isso); passando do limite de bytes guardados, devolve ao sistema os maiores primeiro. Seguro
 // entre threads (um mutex; as alocações são de MB, poucas por janela). Alinhamento de 64 bytes (o do Arrow).
 #include "common.hpp"
+#include "memory.hpp"
 #include <cstdlib>
 #include <iterator>
 #include <map>
@@ -63,8 +64,10 @@ Pool& pool() {
 
 }  // namespace
 
-// Bloco de pelo menos nbytes (endereço como inteiro; 0 se faltou memória).
-DC_EXPORT i64 dc_pool_alloc(i64 nbytes) {
+namespace dc {
+
+// Bloco de pelo menos nbytes (nullptr se faltou memória).
+void* pool_alloc(i64 nbytes) {
   if (nbytes <= 0) nbytes = 1;
   const i64 size = (nbytes + GRAIN - 1) / GRAIN * GRAIN;
   Pool& P = pool();
@@ -79,7 +82,7 @@ DC_EXPORT i64 dc_pool_alloc(i64 nbytes) {
       P.live[p] = got;
       P.live_bytes += got;
       P.hits++;
-      return (i64)(uintptr_t)p;
+      return p;
     }
     P.misses++;
   }
@@ -90,17 +93,16 @@ DC_EXPORT i64 dc_pool_alloc(i64 nbytes) {
       P.shrink_to(0);
     }
     p = raw_alloc((size_t)size);
-    if (p == nullptr) return 0;
+    if (p == nullptr) return nullptr;
   }
   std::lock_guard<std::mutex> lock(P.mu);
   P.live[p] = size;
   P.live_bytes += size;
-  return (i64)(uintptr_t)p;
+  return p;
 }
 
-// Devolve um bloco de dc_pool_alloc ao pool (guardado se couber no limite). Endereço desconhecido: ignora.
-DC_EXPORT void dc_pool_free(i64 addr) {
-  void* p = (void*)(uintptr_t)addr;
+// Devolve um bloco de pool_alloc ao pool (guardado se couber no limite). Endereço desconhecido: ignora.
+void pool_free(void* p) {
   Pool& P = pool();
   std::lock_guard<std::mutex> lock(P.mu);
   auto it = P.live.find(p);
@@ -113,6 +115,14 @@ DC_EXPORT void dc_pool_free(i64 addr) {
   P.cached_bytes += size;
   P.shrink_to(P.limit);
 }
+
+}  // namespace dc
+
+// Bloco de pelo menos nbytes (endereço como inteiro; 0 se faltou memória).
+DC_EXPORT i64 dc_pool_alloc(i64 nbytes) { return (i64)(uintptr_t)dc::pool_alloc(nbytes); }
+
+// Devolve um bloco de dc_pool_alloc ao pool. Endereço desconhecido: ignora.
+DC_EXPORT void dc_pool_free(i64 addr) { dc::pool_free((void*)(uintptr_t)addr); }
 
 // Limite de bytes guardados (< 0: só consulta). 0 desliga a guarda (tudo volta ao sistema ao ser liberado).
 DC_EXPORT i64 dc_pool_limit(i64 bytes) {
