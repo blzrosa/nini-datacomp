@@ -88,9 +88,27 @@ def meta(path: Path) -> None:
         print("codec: indisponível (sem pyarrow neste ambiente)")
 
 
+def _spans_pyarrow(files: list[Path], key: str) -> tuple[list[tuple[Any, Any]], int, int]:
+    """(min, max) da chave por arquivo, dos rodapés, para qualquer tipo comparável (texto, decimal...); precisa do
+    pyarrow. Devolve também os row groups e quantos arquivos não gravaram min/max."""
+    pq = importlib.import_module("pyarrow.parquet")
+    spans: list[tuple[Any, Any]] = []
+    groups = missing = 0
+    for f in files:
+        md = pq.ParquetFile(f).metadata
+        j = next((i for i in range(md.num_columns) if md.schema.column(i).path == key), None)
+        stats = [md.row_group(g).column(j).statistics for g in range(md.num_row_groups)] if j is not None else []
+        groups += len(stats)
+        if not stats or any(st is None or not st.has_min_max for st in stats):
+            missing += 1
+            continue
+        spans.append((min(st.min for st in stats), max(st.max for st in stats)))
+    return spans, groups, missing
+
+
 def footer_ranges(path: Path, key: str = "id") -> None:
     """Faixas de chave pelos rodapés, só agregadas: os arquivos têm faixas disjuntas (poda por faixa funciona)?
-    Diz por que não dá para responder (chave ausente, não inteira, sem estatística) sem imprimir nomes."""
+    Chave inteira: pelo kernel do pacote; outros tipos: pelo pyarrow (se houver). Sem nomes na saída."""
     from nini_datacomp.io import key_stats  # noqa: PLC0415
 
     files = parquet_files(path)
@@ -101,29 +119,38 @@ def footer_ranges(path: Path, key: str = "id") -> None:
     if key not in schema:
         print(f"a coluna '{key}' não existe no primeiro arquivo: passe a chave certa com --key (nome de coluna)")
         return
-    if not schema[key].is_integer():
-        print(f"a chave é do tipo {kind_of(schema[key])}: só chave inteira tem faixa lida do rodapé")
-        return
-    spans: list[tuple[int, int]] = []
-    groups = 0
-    for f in files:
-        st = [s for s in key_stats(f, key) if s.min is not None and s.max is not None]
-        groups += len(st)
-        if st:
-            spans.append((min(s.min for s in st if s.min is not None), max(s.max for s in st if s.max is not None)))
+    spans: list[tuple[Any, Any]] = []
+    groups = missing = 0
+    if schema[key].is_integer():
+        for f in files:
+            st = [s for s in key_stats(f, key) if s.min is not None and s.max is not None]
+            groups += len(st)
+            if st:
+                spans.append((min(s.min for s in st if s.min is not None), max(s.max for s in st if s.max is not None)))
+            else:
+                missing += 1
+    else:
+        try:
+            spans, groups, missing = _spans_pyarrow(files, key)
+        except ImportError:
+            print(f"a chave é do tipo {kind_of(schema[key])}: sem pyarrow neste ambiente (use --with pyarrow)")
+            return
     if not spans:
-        print(f"chave inteira, mas {len(files)} arquivo(s) sem min/max gravados no rodapé")
+        print(f"{len(files)} arquivo(s) sem min/max gravados no rodapé para esta chave")
         return
-    lo, hi = min(a for a, _ in spans), max(b for _, b in spans)
-    width = max(1, hi - lo)
     overlapping = sum(
         1 for i, (a, b) in enumerate(spans) if any(a <= d and c <= b for j, (c, d) in enumerate(spans) if j != i)
     )
-    mean_span = sum(b - a for a, b in spans) / len(spans) / width
-    print(
-        f"arquivos com estatística: {len(spans)} de {len(files)}; row groups: {groups}; arquivos que cruzam a faixa de "
-        f"outro: {overlapping}; faixa média de um arquivo: {mean_span:.1%} da faixa total"
+    msg = (
+        f"tipo {kind_of(schema[key])}; arquivos com min/max: {len(spans)} de {len(files)}; row groups: {groups}; "
+        f"arquivos que cruzam a faixa de outro: {overlapping}"
     )
+    if schema[key].is_integer():
+        lo, hi = min(a for a, _ in spans), max(b for _, b in spans)
+        msg += (
+            f"; faixa média de um arquivo: {sum(b - a for a, b in spans) / len(spans) / max(1, hi - lo):.1%} da total"
+        )
+    print(msg + (f"; sem min/max: {missing}" if missing else ""))
 
 
 def per_file_cost(src: Any, paths: list[Path], pred: Any, repeat: int) -> str:
