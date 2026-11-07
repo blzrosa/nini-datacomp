@@ -273,6 +273,20 @@ Sem o staging, o mesmo caso com 1 GB levava 65 s e passava do limite (1,48 GiB).
 janelas e menos fatias, então é mais rápido. Detalhes em
 [`docs/benchmarks/fase7.md`](https://github.com/blzrosa/nini-datacomp/blob/main/docs/benchmarks/fase7.md).
 
+**O staging nem sempre compensa.** Comparado à 0.3.0 (sem staging), medido em dados sintéticos (média de 3 execuções,
+mesma máquina), com a chave embaralhada:
+
+| linhas x colunas | amplificação | janelas | 0.3.0 (1GB / 2GB) | 0.4.0 (1GB / 2GB) |
+|---|---:|---:|---|---|
+| 1M x 50 | 5 / 3 | 5 / 3 | 1,0 s / 0,64 s | 0,99 s / 0,63 s |
+| 1M x 300 | 10 | 10 | 10,3 s / 9,9 s | 22,8 s / 16,4 s |
+| 10M x 10 | 10 / 5 | 10 / 5 | 4,0 s / 2,2 s | 6,0 s / 4,0 s |
+| 10M x 50 | 41 / 21 | 41 / 21 | 59,5 s / 30,9 s | 41,9 s / 26,2 s |
+
+Só ganhou em 10M x 50, onde a amplificação é alta (21 a 41); com amplificação 10 ou menos, regravar a fonte custou mais
+do que a leitura repetida. Com a chave **ordenada** não há diferença mensurável entre as versões (o staging não entra).
+No caminho ordenado, a espera pela leitura (`read_wait`) é de ~60% do tempo em 1M x 50 e ~78% em 10M x 300.
+
 ## Vindo do datacompolars
 
 Mesma semântica; mudam os nomes, e o que era ajuste interno do motor vira um orçamento de memória.

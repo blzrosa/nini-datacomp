@@ -16,6 +16,10 @@ Depois, o ``compare_rows`` inteiro com ``prefetch`` ligado e desligado: ``read_w
 principal esperou (não escondida atrás do hash). Limitar as threads da leitura já foi testado e
 piorou: não se repete.
 
+``--footers PASTA`` imprime, agregado, se as faixas de chave dos arquivos (rodapé) são disjuntas: se não são, o filtro
+por faixa não descarta arquivos e cada janela lê mais do que precisa. Com mais de um arquivo por janela, imprime
+também o custo de cada arquivo sozinho.
+
 ``--meta`` imprime só no terminal (nunca grava): codec, row groups e quantas colunas há de cada tipo, sem nomes.
 """
 
@@ -84,6 +88,48 @@ def meta(path: Path) -> None:
         print("codec: indisponível (sem pyarrow neste ambiente)")
 
 
+def footer_ranges(path: Path, key: str = "id") -> None:
+    """Faixas de chave pelos rodapés, só agregadas: os arquivos têm faixas disjuntas (poda por faixa funciona)?"""
+    from nini_datacomp.io import key_stats  # noqa: PLC0415
+
+    spans: list[tuple[int, int]] = []
+    groups = 0
+    for f in parquet_files(path):
+        st = [s for s in key_stats(f, key) if s.min is not None and s.max is not None]
+        groups += len(st)
+        if st:
+            spans.append((min(s.min for s in st if s.min is not None), max(s.max for s in st if s.max is not None)))
+    if not spans:
+        print("sem estatísticas de chave nos rodapés")
+        return
+    lo, hi = min(a for a, _ in spans), max(b for _, b in spans)
+    width = max(1, hi - lo)
+    overlapping = sum(
+        1 for i, (a, b) in enumerate(spans) if any(a <= d and c <= b for j, (c, d) in enumerate(spans) if j != i)
+    )
+    mean_span = sum(b - a for a, b in spans) / len(spans) / width
+    print(
+        f"arquivos com estatística: {len(spans)}; row groups: {groups}; arquivos que cruzam a faixa de outro: "
+        f"{overlapping}; faixa média de um arquivo: {mean_span:.1%} da faixa total"
+    )
+
+
+def per_file_cost(src: Any, paths: list[Path], pred: Any, repeat: int) -> str:
+    """Custo (ms) de ler cada arquivo da janela sozinho, com o filtro, e as linhas que sobram dele."""
+    out = []
+    for p in paths:
+        lf = src.scan([p])
+        lf = lf if pred is None else lf.filter(pred)
+        rows = 0
+
+        def go(lf: pl.LazyFrame = lf) -> None:
+            nonlocal rows
+            rows = lf.collect().height
+
+        out.append(f"{best(go, repeat) * 1000:.0f} ms/{rows:,} linhas")
+    return "; ".join(out)
+
+
 def raw_copy(files: list[Path], dest: Path) -> list[Path]:
     dest.mkdir(parents=True, exist_ok=True)
     out = []
@@ -120,6 +166,8 @@ def measure_window(
     raws = raw_copy(paths, raw_dir)
     row["raw"] = best(lambda: scan(raws).collect(), repeat)
     row["bytes_floor"] = best(lambda: read_bytes(paths), repeat)
+    if len(paths) > 1:
+        print("    por arquivo: " + per_file_cost(src, paths, pred, repeat), flush=True)
     shutil.rmtree(raw_dir, ignore_errors=True)
     return row, sum(p.stat().st_size for p in paths) / MB
 
@@ -127,14 +175,19 @@ def measure_window(
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--case", default="2000000x84w")
+    ap.add_argument("--root", type=Path, default=None, help="pasta com left/ e right/ (em vez de --case)")
     ap.add_argument("--window-rows", type=int, default=220_000)
     ap.add_argument("--windows", type=int, default=3, help="quantas janelas medir por lado")
     ap.add_argument("--repeat", type=int, default=2)
     ap.add_argument("--memory-limit", default="2GB")
     ap.add_argument("--meta", type=Path, default=None, help="só imprime codec, row groups e dtypes desta fonte")
+    ap.add_argument("--footers", type=Path, default=None, help="só imprime as faixas de chave dos rodapés (agregado)")
     args = ap.parse_args()
     if args.meta:
         meta(args.meta)
+        return
+    if args.footers:
+        footer_ranges(args.footers)
         return
 
     from bench_hash import case_dataset  # noqa: PLC0415
@@ -142,7 +195,7 @@ def main() -> None:
     from nini_datacomp.pipeline import compare_rows, prepare_keys  # noqa: PLC0415
     from nini_datacomp.windows import plan_windows  # noqa: PLC0415
 
-    root = case_dataset(args.case)
+    root = args.root or case_dataset(args.case)
     ls, rs, dtypes = prepare_keys(open_source(root / "left"), open_source(root / "right"), ["id"])
     plan = plan_windows(ls, rs, ["id"], args.memory_limit, window_rows=args.window_rows)
     print(

@@ -4,6 +4,16 @@ Formato: [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/); versões: 
 
 ## [Não lançado]
 
+### Para quem usa
+- Nota de desempenho (README, "Chave fora de ordem"): medido contra a 0.3.0 em dados sintéticos, o staging por janela só
+  ganhou onde a amplificação de leitura é alta (10M x 50: 21 a 41); com amplificação ≤ 10 foi mais lento. Com a chave
+  ordenada, sem diferença mensurável. Nenhuma mudança de comportamento.
+
+### Para quem desenvolve
+- `tools/make_data.py`: perfil `wide84`; `tools/bench_hash.py`: casos `NxMw`/`NxMwu`, `--window-rows`, `--out-json`;
+  `tools/diag_read_split.py` e `tools/relayout.py` (diagnóstico da leitura). Estudo em
+  `docs/benchmarks/leitura_otimizacao.md`.
+
 ## [0.4.0] — 2026-11-06
 
 Versão menor (0.3.0 → 0.4.0): traz recurso novo (staging por janela, `read_amplification`, `notes`) e não quebra

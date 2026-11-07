@@ -1,9 +1,9 @@
 #!/bin/bash
 # grade do passo 6: v0.4.0 e v0.3.0 x {1GB,2GB}; ordenados e u; 3 runs
 cd /c/Users/blzro/Desktop/projects/nini-datacomp
-CASES="1000000x10 1000000x50 1000000x300 10000000x10 10000000x50 10000000x300 1000000x10u 1000000x50u 1000000x300u 10000000x10u 10000000x50u 10000000x300u"
+CASES="1000000x10 1000000x50 1000000x300 10000000x10 10000000x50 10000000x300 1000000x10u 1000000x50u 1000000x300u 10000000x10u 10000000x50u"
 t0=$(date +%s)
-for ver in 040 030; do
+for ver in 040; do
   for lim in 1GB 2GB; do
     free=$(python -c "import shutil;print(int(shutil.disk_usage('.').free/2**30))")
     if [ "$free" -lt 15 ]; then echo "PARADO: disco $free GB"; exit 1; fi
