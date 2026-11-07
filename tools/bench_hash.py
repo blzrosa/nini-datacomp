@@ -14,6 +14,7 @@ com ``--mode columnwise`` (``abs_tol=1e-12``, como o columnwise da linha de base
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
 import os
 import shutil
@@ -35,9 +36,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import polars as pl
 
 from bench_baseline import _self_peak_bytes
-from bench_rows import dataset
+from bench_rows import DATA, dataset
 from benchstats import Stats, compare, summarize
-from make_data import load_expected
+from make_data import WIDE84, Spec, generate, load_expected
 
 ROOT = Path(__file__).resolve().parents[1]
 DOCS = ROOT / "docs" / "benchmarks"
@@ -48,10 +49,40 @@ UNORDERED_CASES = ("10000000x50u", "30000000x50u")
 _SCATTER = 999_983  # primo: id * _SCATTER % M é uma permutação dos ids (M primo maior que o maior id)
 
 
-def unordered_dataset(case: str) -> Path:
-    """O caso ``<linhas>x<colunas>u``: o mesmo par de tabelas, chave embaralhada (a mesma permutação dos dois lados,
-    então as contagens esperadas não mudam), arquivo a arquivo: cada row group passa a ter ids da faixa inteira."""
-    root = dataset(case.removesuffix("u"))
+def parse_case(case: str) -> tuple[Spec, bool]:
+    """``<linhas>x<colunas>[w][u]`` -> (especificação dos dados, fora de ordem?). ``w``: perfil wide84 (84 colunas, 48
+    exatas e 36 reais, ~6 mil linhas só da esquerda e ~400 só da direita em 22M, divergência de 5%); ``u``: chave
+    embaralhada."""
+    unordered = case.endswith("u")
+    base = case.removesuffix("u")
+    wide = base.endswith("w")
+    rows, cols = (int(x) for x in base.removesuffix("w").split("x"))
+    if wide:
+        if cols != 84:
+            raise ValueError("o perfil wide84 (sufixo w) tem 84 colunas")
+        return Spec(
+            rows, cols, divergence=0.05, only_left=0.00027, only_right=0.0000182, profile=WIDE84, tag=WIDE84
+        ), unordered
+    return Spec(rows, cols), unordered
+
+
+def case_root(case: str) -> Path:
+    """A pasta dos dados do caso (sem gerar nada)."""
+    spec, unordered = parse_case(case)
+    root = DATA / spec.label
+    return root.with_name(root.name + "_unordered") if unordered else root
+
+
+def case_dataset(case: str) -> Path:
+    """Os dados do caso, gerados se ainda não existem (o caso ``u`` é derivado do ordenado)."""
+    spec, unordered = parse_case(case)
+    root = generate(spec, DATA) if spec.profile == WIDE84 else dataset(f"{spec.rows}x{spec.cols}")
+    return unordered_dataset(root) if unordered else root
+
+
+def unordered_dataset(root: Path) -> Path:
+    """O mesmo par de tabelas com a chave embaralhada (a mesma permutação dos dois lados, então as contagens esperadas
+    não mudam), arquivo a arquivo: cada row group passa a ter ids da faixa inteira."""
     out = root.with_name(root.name + "_unordered")
     if (out / "expected.json").exists():
         return out
@@ -78,15 +109,25 @@ def _next_prime(n: int) -> int:
 
 
 # ----------------------------------------------------------------------------- execução (subprocesso)
+def compare_kwargs(spec: dict[str, Any], fn: Any) -> dict[str, Any]:
+    """Os argumentos de ``compare_rows`` que a versão instalada aceita (a v0.3.0 não tem alguns)."""
+    wanted = {
+        "memory_limit": spec["memory_limit"], "abs_tol": spec["abs_tol"], "window_rows": spec.get("window_rows"),
+    }  # fmt: skip
+    accepted = inspect.signature(fn).parameters
+    return {k: v for k, v in wanted.items() if k in accepted and v is not None}
+
+
 def worker(spec: dict[str, Any]) -> None:
     from nini_datacomp.pipeline import compare_rows  # noqa: PLC0415 - no subprocesso, fora do cronômetro
 
     if spec.get("partition") is False:  # sem o staging por janela (só para medir o que ele custa e ganha)
         from nini_datacomp import pipeline  # noqa: PLC0415
 
-        setattr(pipeline, "PARTITION_THRESHOLD", float("inf"))  # noqa: B010
+        if hasattr(pipeline, "PARTITION_THRESHOLD"):  # a v0.3.0 não tem staging: nada a desligar
+            setattr(pipeline, "PARTITION_THRESHOLD", float("inf"))  # noqa: B010
     t0 = time.perf_counter()
-    res = compare_rows(spec["left"], spec["right"], ["id"], memory_limit=spec["memory_limit"], abs_tol=spec["abs_tol"])
+    res = compare_rows(spec["left"], spec["right"], ["id"], **compare_kwargs(spec, compare_rows))
     seconds = time.perf_counter() - t0
     out = {
         "seconds": seconds,
@@ -97,13 +138,13 @@ def worker(spec: dict[str, Any]) -> None:
         "mismatched": res.mismatched,
         "columns": {c: n for c, n in res.column_mismatches.items() if n},
         "windows": res.windows,
-        "pieces": res.hash_pieces,
-        "groups": res.column_groups,
-        "rows_per_window": res.rows_per_window,
-        "window_mb": res.window_bytes / MB,
-        "timings": res.timings,
-        "amplification": list(res.read_amplification),
-        "notes": list(res.notes),
+        "pieces": getattr(res, "hash_pieces", 0),
+        "groups": getattr(res, "column_groups", 1),
+        "rows_per_window": getattr(res, "rows_per_window", 0),
+        "window_mb": getattr(res, "window_bytes", 0) / MB,
+        "timings": getattr(res, "timings", {}),
+        "amplification": list(getattr(res, "read_amplification", ())),
+        "notes": list(getattr(res, "notes", ())),
     }
     print("RESULT " + json.dumps(out))
 
@@ -234,6 +275,11 @@ def main() -> None:
         "--no-staging", action="store_true",
         help="nos casos com chave fora de ordem, mede também sem o staging por janela (caso \"... sem staging\")",
     )  # fmt: skip
+    ap.add_argument("--window-rows", type=int, default=None, help="linhas por janela (o padrão: o plano decide)")
+    ap.add_argument(
+        "--out-json", type=Path, default=None,
+        help="grava os resultados neste JSON e não gera o relatório (não toca em docs/)",
+    )  # fmt: skip
     ap.add_argument(
         "--mode", choices=("hash", "columnwise"), default="hash",
         help="columnwise: abs_tol=1e-12 (as numéricas comparadas uma a uma), contra o columnwise do datacompolars",
@@ -246,13 +292,13 @@ def main() -> None:
         variants += [(c, False) for c in args.cases if c.endswith("u")]
     for case, partition in variants:
         label = case if partition else f"{case} sem staging"
-        root = unordered_dataset(case) if case.endswith("u") else dataset(case)
+        root = case_dataset(case)
         exp = load_expected(root)
         want = (exp.common, exp.left_only, exp.right_only, exp.mismatched)
         spec = {
             "left": str(root / "left"), "right": str(root / "right"), "memory_limit": args.memory_limit,
             "abs_tol": abs_tol,
-            "partition": partition,
+            "partition": partition, "window_rows": args.window_rows,
         }  # fmt: skip
         want_columns = {c: n for c, n in exp.column_mismatches.items() if n}
         measure_once(spec)  # aquecimento (cache de disco), descartado
@@ -268,6 +314,11 @@ def main() -> None:
                 f"{'ok' if r['ok'] else 'ERRADO'}",
                 flush=True,
             )
+    if args.out_json:
+        args.out_json.parent.mkdir(parents=True, exist_ok=True)
+        args.out_json.write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
+        print(f"resultados: {args.out_json}")
+        return
     print(f"relatório: {report(results, args.memory_limit, args.mode).relative_to(ROOT)}")
 
 

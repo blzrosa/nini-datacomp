@@ -52,6 +52,36 @@ KINDS: tuple[tuple[str, dict[str, Any]], ...] = (
     ("datetime", {}),
 )
 
+# perfil ``wide84``: 84 colunas, 48 exatas (12 inteiros, 12 de texto, 8 booleanos, 8 datas, 8 datas e hora) e 36 reais,
+# intercalados (a cada 7 colunas: 4 exatas e 3 reais)
+WIDE84 = "wide84"
+_WIDE_EXACT: tuple[tuple[str, dict[str, Any]], ...] = (
+    ("integer", {"low": 0, "high": 1_000_000}),
+    ("first_name", {}),
+    ("integer", {"low": 0, "high": 1_000_000}),
+    ("date", {}),
+    ("last_name", {}),
+    ("boolean", {}),
+    ("datetime", {}),
+    ("integer", {"low": 0, "high": 1_000_000}),
+    ("cpf", {"formatted": True}),
+    ("date", {}),
+    ("boolean", {}),
+    ("datetime", {}),
+)
+
+
+def _wide84_kinds() -> list[tuple[str, dict[str, Any]]]:
+    kinds: list[tuple[str, dict[str, Any]]] = []
+    exact = 0
+    for j in range(84):
+        if j % 7 in (1, 3, 5):
+            kinds.append(("uniform", {}))
+        else:
+            kinds.append(_WIDE_EXACT[exact % len(_WIDE_EXACT)])
+            exact += 1
+    return kinds
+
 
 def column_names(n: int) -> list[str]:
     """``aa``, ``ab``, ... (``id`` fica de fora: é a chave)."""
@@ -73,8 +103,13 @@ class Spec:
     seed: int = 42
     row_group_size: int | None = None  # None: o padrão do Polars (o que um arquivo de verdade costuma ter)
     tag: str = ""
+    profile: str = "default"  # "wide84": 84 colunas, 48 exatas e 36 reais (ver WIDE84)
 
     def __post_init__(self) -> None:
+        if self.profile not in ("default", WIDE84):
+            raise ValueError(f"profile deve ser 'default' ou '{WIDE84}'")
+        if self.profile == WIDE84 and self.cols != 84:
+            raise ValueError("o perfil wide84 tem 84 colunas")
         if self.rows < 1:
             raise ValueError("rows deve ser >= 1")
         column_names(self.cols)
@@ -115,8 +150,9 @@ class Expected:
 def schema(spec: Spec) -> dict[str, tuple[str, dict[str, Any]]]:
     names = column_names(spec.cols)
     out: dict[str, tuple[str, dict[str, Any]]] = {}
+    kinds = _wide84_kinds() if spec.profile == WIDE84 else None
     for j, name in enumerate(names):
-        kind, opts = KINDS[j % len(KINDS)]
+        kind, opts = kinds[j] if kinds else KINDS[j % len(KINDS)]
         out[name] = (kind, {**opts, "null_fraction": spec.null_rate} if spec.null_rate else dict(opts))
     return out
 
@@ -222,11 +258,17 @@ def main() -> None:
     ap.add_argument("--divergence", type=float, default=Spec.divergence)
     ap.add_argument("--seed", type=int, default=Spec.seed)
     ap.add_argument("--tag", default="")
+    ap.add_argument("--profile", choices=("default", WIDE84), default="default")
+    ap.add_argument("--only-left", type=float, default=Spec.only_left)
+    ap.add_argument("--only-right", type=float, default=Spec.only_right)
     ap.add_argument("--overwrite", action="store_true")
     args = ap.parse_args()
     for rows in args.rows:
         for cols in args.cols:
-            spec = Spec(rows, cols, divergence=args.divergence, seed=args.seed, tag=args.tag)
+            spec = Spec(
+                rows, cols, divergence=args.divergence, seed=args.seed, tag=args.tag, profile=args.profile,
+                only_left=args.only_left, only_right=args.only_right,
+            )  # fmt: skip
             root = generate(spec, args.out, overwrite=args.overwrite)
             print(f"{root}: {load_expected(root)}")
 

@@ -1,0 +1,33 @@
+warning: `VIRTUAL_ENV=C:\Users\blzro\Desktop\projects\nini-datacomp\.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+Using CPython 3.12.13
+Creating virtual environment at: .venv
+Resolved 34 packages in 1ms
+   Building nini-datacomp @ file:///C:/Users/blzro/Desktop/projects/nini-datacomp-v030
+      Built nini-datacomp @ file:///C:/Users/blzro/Desktop/projects/nini-datacomp-v030
+Prepared 1 package in 32.86s
+Installed 24 packages in 3.87s
+ + annotated-types==0.8.0
+ + colorama==0.4.6
+ + coverage==7.17.0
+ + datacompolars==0.4.4
+ + iniconfig==2.3.1
+ + nini-datacomp==0.3.0 (from file:///C:/Users/blzro/Desktop/projects/nini-datacomp-v030)
+ + nini-datagen==0.3.0
+ + nodeenv==1.12.0
+ + numpy==2.5.4
+ + packaging==26.3
+ + platformdirs==4.14.3
+ + pluggy==1.7.0
+ + polars==2.1.0
+ + polars-runtime-32==2.1.0
+ + psutil==7.2.2
+ + pydantic==2.14.2
+ + pydantic-core==2.50.2
+ + pygments==2.21.0
+ + pyright==1.1.414
+ + pytest==9.2.0
+ + pytest-cov==7.1.0
+ + ruff==0.17.3
+ + typing-extensions==4.16.0
+ + typing-inspection==0.4.4
+exit=0
