@@ -60,7 +60,9 @@ IN_FLIGHT = 4.0
 # 3,5 e com 4 (a janela é a mesma); com 5 grupos (o que este fator dá ali), 700 ± 26 MB (até 718), ~7% mais lento.
 GROUP_IN_FLIGHT = 6.75
 KERNEL_BYTES_PER_ROW = 32  # pares (8), hashes dos dois lados (16) e tabelas, por linha da janela
-PARTITION_THRESHOLD = 3.0  # amplificação de leitura (Plan.read_amplification) acima da qual a fonte é reparticionada
+# amplificação de leitura (Plan.read_amplification) acima da qual a fonte é reparticionada. Medido (docs/benchmarks/
+# leitura_otimizacao.md): com amplificação 3 a 10 regravar custou mais que ler a mais (até 2,2x); com 21 ou mais ganhou.
+PARTITION_THRESHOLD = 15.0
 SAMPLE_ROWS = 10_000  # linhas lidas (só das colunas de largura variável) para medir os bytes por linha
 SAMPLE_KEYS = 200_000  # chaves da amostra que define as fronteiras quando a fonte não está em ordem
 _UNITS = {

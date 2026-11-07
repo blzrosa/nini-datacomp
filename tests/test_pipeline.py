@@ -17,6 +17,7 @@ import make_data
 import make_golden
 from cases import CASES
 from make_data import Spec, generate, load_expected
+from nini_datacomp import pipeline, windows
 from nini_datacomp.errors import UnsupportedTypeError
 from nini_datacomp.io import open_source
 from nini_datacomp.pipeline import WindowReader, compare_rows, count_rows, prepare_keys
@@ -336,6 +337,7 @@ def test_partitioned_staging_counts(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     temp = tmp_path / "tmp"
     temp.mkdir()
     monkeypatch.setattr(tempfile, "tempdir", str(temp))
+    monkeypatch.setattr(pipeline, "PARTITION_THRESHOLD", 3.0)  # amplificação ~4 aqui: abaixo do limiar de produção
     lp, rp = _write_pair(tmp_path, shuffled=True)
     got = compare_rows(lp, rp, ["id"], window_rows=1000)
     gc.collect()
@@ -347,6 +349,17 @@ def test_partitioned_staging_counts(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert not any("reparticionadas" in n for n in base.notes)
     for field in ("left_total", "right_total", "common", "left_only", "right_only", "mismatched"):
         assert getattr(got, field) == getattr(base, field), field
+    assert (got.common, got.left_only, got.right_only) == (3900, 100, 100)
+    assert got.mismatched == len([i for i in range(100, 4000) if i % 7 == 0])
+
+
+def test_partitioned_staging_skipped_below_threshold(tmp_path: Path) -> None:
+    """Amplificação baixa (~4, abaixo do limiar): regravar a fonte custa mais que ler a mais; não entra staging."""
+    lp, rp = _write_pair(tmp_path, shuffled=True)
+    got = compare_rows(lp, rp, ["id"], window_rows=1000)
+    assert got.windows > 2
+    assert all(3.0 < a < windows.PARTITION_THRESHOLD for a in got.read_amplification)
+    assert not any("reparticionadas" in n for n in got.notes)
     assert (got.common, got.left_only, got.right_only) == (3900, 100, 100)
     assert got.mismatched == len([i for i in range(100, 4000) if i % 7 == 0])
 

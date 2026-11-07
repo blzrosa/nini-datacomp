@@ -5,9 +5,10 @@ Formato: [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/); versões: 
 ## [Não lançado]
 
 ### Para quem usa
-- Nota de desempenho (README, "Chave fora de ordem"): medido contra a 0.3.0 em dados sintéticos, o staging por janela só
-  ganhou onde a amplificação de leitura é alta (10M x 50: 21 a 41); com amplificação ≤ 10 foi mais lento. Com a chave
-  ordenada, sem diferença mensurável. Nenhuma mudança de comportamento.
+- Staging por janela agora só entra com amplificação de leitura > 15 (era > 3). Medido contra a 0.3.0 em dados
+  sintéticos, ele só ganhou onde a amplificação é alta (10M x 50: 21 a 41); com 3 a 10 regravar a fonte foi até 2,2x mais
+  lento que ler a mais. Com a chave ordenada, sem diferença. Fontes fora de ordem com amplificação entre 3 e 15 voltam a
+  ser lidas sem staging, como na 0.3.0.
 
 ### Para quem desenvolve
 - `tools/make_data.py`: perfil `wide84`; `tools/bench_hash.py`: casos `NxMw`/`NxMwu`, `--window-rows`, `--out-json`;

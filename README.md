@@ -248,7 +248,7 @@ resultado como **amplificação de leitura**: `result.execution.read_amplificati
 linhas decodificadas divididas pelas linhas do lado (1,0 = cada linha é lida uma vez; 21,0 = a fonte foi lida 21
 vezes); é o valor do plano, antes do staging. Está em `execution`, não em `to_dict()`/`to_json()`. `nan` quando não foi medida.
 
-Quando a fonte é Parquet, a amplificação passa de 3 e há mais de 2 janelas, o nini-datacomp faz o **staging por
+Quando a fonte é Parquet, a amplificação passa de 15 e há mais de 2 janelas, o nini-datacomp faz o **staging por
 janela**: regrava a fonte numa pasta temporária, com um arquivo por janela (e por fatia lida), numa só passada. Depois,
 ler a janela k abre só os arquivos dela. A pasta fica no `temp_dir` do `ReadOptions` (o do sistema por padrão), ocupa
 em disco algo próximo do tamanho da fonte (por lado reparticionado) e some no fim da comparação, mesmo com erro. A
@@ -273,7 +273,7 @@ Sem o staging, o mesmo caso com 1 GB levava 65 s e passava do limite (1,48 GiB).
 janelas e menos fatias, então é mais rápido. Detalhes em
 [`docs/benchmarks/fase7.md`](https://github.com/blzrosa/nini-datacomp/blob/main/docs/benchmarks/fase7.md).
 
-**O staging nem sempre compensa.** Comparado à 0.3.0 (sem staging), medido em dados sintéticos (média de 3 execuções,
+**O staging só compensa com amplificação alta (por isso o limiar é 15).** Comparado à 0.3.0 (sem staging), medido em dados sintéticos (média de 3 execuções,
 mesma máquina), com a chave embaralhada:
 
 | linhas x colunas | amplificação | janelas | 0.3.0 (1GB / 2GB) | 0.4.0 (1GB / 2GB) |

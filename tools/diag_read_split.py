@@ -89,18 +89,30 @@ def meta(path: Path) -> None:
 
 
 def footer_ranges(path: Path, key: str = "id") -> None:
-    """Faixas de chave pelos rodapés, só agregadas: os arquivos têm faixas disjuntas (poda por faixa funciona)?"""
+    """Faixas de chave pelos rodapés, só agregadas: os arquivos têm faixas disjuntas (poda por faixa funciona)?
+    Diz por que não dá para responder (chave ausente, não inteira, sem estatística) sem imprimir nomes."""
     from nini_datacomp.io import key_stats  # noqa: PLC0415
 
+    files = parquet_files(path)
+    if not files:
+        print("nenhum arquivo Parquet")
+        return
+    schema = pl.read_parquet_schema(files[0])
+    if key not in schema:
+        print(f"a coluna '{key}' não existe no primeiro arquivo: passe a chave certa com --key (nome de coluna)")
+        return
+    if not schema[key].is_integer():
+        print(f"a chave é do tipo {kind_of(schema[key])}: só chave inteira tem faixa lida do rodapé")
+        return
     spans: list[tuple[int, int]] = []
     groups = 0
-    for f in parquet_files(path):
+    for f in files:
         st = [s for s in key_stats(f, key) if s.min is not None and s.max is not None]
         groups += len(st)
         if st:
             spans.append((min(s.min for s in st if s.min is not None), max(s.max for s in st if s.max is not None)))
     if not spans:
-        print("sem estatísticas de chave nos rodapés")
+        print(f"chave inteira, mas {len(files)} arquivo(s) sem min/max gravados no rodapé")
         return
     lo, hi = min(a for a, _ in spans), max(b for _, b in spans)
     width = max(1, hi - lo)
@@ -109,8 +121,8 @@ def footer_ranges(path: Path, key: str = "id") -> None:
     )
     mean_span = sum(b - a for a, b in spans) / len(spans) / width
     print(
-        f"arquivos com estatística: {len(spans)}; row groups: {groups}; arquivos que cruzam a faixa de outro: "
-        f"{overlapping}; faixa média de um arquivo: {mean_span:.1%} da faixa total"
+        f"arquivos com estatística: {len(spans)} de {len(files)}; row groups: {groups}; arquivos que cruzam a faixa de "
+        f"outro: {overlapping}; faixa média de um arquivo: {mean_span:.1%} da faixa total"
     )
 
 
@@ -181,13 +193,14 @@ def main() -> None:
     ap.add_argument("--repeat", type=int, default=2)
     ap.add_argument("--memory-limit", default="2GB")
     ap.add_argument("--meta", type=Path, default=None, help="só imprime codec, row groups e dtypes desta fonte")
+    ap.add_argument("--key", default="id", help="nome da coluna-chave para --footers (inteira)")
     ap.add_argument("--footers", type=Path, default=None, help="só imprime as faixas de chave dos rodapés (agregado)")
     args = ap.parse_args()
     if args.meta:
         meta(args.meta)
         return
     if args.footers:
-        footer_ranges(args.footers)
+        footer_ranges(args.footers, args.key)
         return
 
     from bench_hash import case_dataset  # noqa: PLC0415
