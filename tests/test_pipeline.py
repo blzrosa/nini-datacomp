@@ -377,6 +377,68 @@ def test_stage_partitioned_cleanup(tmp_path: Path) -> None:
     assert not folder.exists()
 
 
+def _write_text_lake(folder: Path, *, shuffled: bool, n: int = 4000, files: int = 8, text: bool = True) -> Path:
+    """``n`` linhas em ``files`` arquivos de 1 row group: faixas contíguas de chave, ou (``shuffled``) cada arquivo com
+    chaves de toda a faixa. A chave é texto (``K0000042``) ou inteira."""
+    folder.mkdir()
+    for f in range(files):
+        ids = [i for i in range(n) if (i % files == f if shuffled else i * files // n == f)]
+        key = [f"K{i:07d}" for i in ids] if text else ids
+        pl.DataFrame({"id": key, "v": [i * 3 for i in ids]}).write_parquet(
+            folder / f"p{f:02d}.parquet", row_group_size=n, statistics=True
+        )
+    return folder
+
+
+@pytest.mark.parametrize("text", [True, False])
+def test_read_amplification_multi_file_text_key(tmp_path: Path, text: bool) -> None:
+    """Chave de texto: sem estatística de inteiro, a amplificação vem das faixas dos arquivos (arquivo inteiro lido)."""
+    ordered = _write_text_lake(tmp_path / "o", shuffled=False, text=text)
+    shuffled = _write_text_lake(tmp_path / "s", shuffled=True, text=text)
+    po = plan_windows(open_source(ordered), open_source(ordered), ["id"], window_rows=500)
+    ps = plan_windows(open_source(shuffled), open_source(shuffled), ["id"], window_rows=500)
+    assert len(po.windows) >= 4
+    assert all(1.0 <= a <= 2.0 for a in po.read_amplification)  # cada janela encosta em 1-2 arquivos
+    assert all(a > 2.5 for a in ps.read_amplification)  # as janelas encostam em muitos arquivos
+    assert all(a > 1.5 * b for a, b in zip(ps.read_amplification, po.read_amplification, strict=True))
+
+
+def test_read_amplification_single_text_file_is_nan(tmp_path: Path) -> None:
+    """Um arquivo só e chave de texto: sem faixa por arquivo para estimar, continua desconhecida."""
+    lake = _write_text_lake(tmp_path / "um", shuffled=False, files=1)
+    plan = plan_windows(open_source(lake), open_source(lake), ["id"], window_rows=500)
+    assert all(math.isnan(a) for a in plan.read_amplification)
+
+
+def test_text_key_amplification_does_not_trigger_staging(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A estimativa por arquivo (chave de texto) é só informação: o staging pediria row groups com estatística."""
+    monkeypatch.setattr(windows, "PARTITION_THRESHOLD", 3.0)
+    monkeypatch.setattr(pipeline, "PARTITION_THRESHOLD", 3.0)
+    lake = _write_text_lake(tmp_path / "t", shuffled=True)
+    got = compare_rows(lake, lake, ["id"], window_rows=500)
+    assert all(a > 3.0 for a in got.read_amplification)
+    assert not any("reparticionadas" in n for n in got.notes)
+    assert (got.common, got.left_only, got.right_only, got.mismatched) == (4000, 0, 0, 0)
+
+
+def test_partitioned_staging_other_side_when_aligned(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Plano alinhado pelos row groups da esquerda (em ordem); a direita, em vários arquivos embaralhados, é
+    reparticionada sozinha: a amplificação dela passa do limiar e a da esquerda não."""
+    monkeypatch.setattr(windows, "PARTITION_THRESHOLD", 3.0)
+    monkeypatch.setattr(pipeline, "PARTITION_THRESHOLD", 3.0)
+    n = 4000
+    pl.DataFrame({"id": range(n), "v": [i * 3 for i in range(n)]}).write_parquet(
+        tmp_path / "left.parquet", row_group_size=250, statistics=True
+    )
+    right = _write_text_lake(tmp_path / "right", shuffled=True, n=n, text=False)
+    got = compare_rows(tmp_path / "left.parquet", right, ["id"], window_rows=500)
+    assert got.aligned_to_row_groups
+    assert got.read_amplification[0] == pytest.approx(1.0, abs=0.05)
+    assert got.read_amplification[1] > 3.0
+    assert any("reparticionadas" in n for n in got.notes)
+    assert (got.common, got.left_only, got.right_only, got.mismatched) == (n, 0, 0, 0)
+
+
 def test_partitioned_staging_skipped_when_aligned(tmp_path: Path) -> None:
     lp, rp = _write_pair(tmp_path, shuffled=False)
     got = compare_rows(lp, rp, ["id"], window_rows=1000)

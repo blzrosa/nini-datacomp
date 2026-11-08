@@ -634,16 +634,18 @@ _STAGE_DIVISOR = 10  # o staging lê fatias de memory_limit / 10 (o pico real é
 def _repartition(
     plan: Plan, ls: Source, rs: Source, keys: Sequence[str], read_options: tuple[ReadOptions, ReadOptions] | None
 ) -> tuple[Plan, Source, Source, list[Source]]:
-    """Os lados Parquet fora de ordem com amplificação de leitura alta (`PARTITION_THRESHOLD`) regravados com um
-    arquivo por janela, numa passada: sem isso cada janela decodifica a fonte inteira. Devolve o plano e as fontes
-    novos e as fontes criadas aqui (quem chama apaga as pastas)."""
+    """Os lados Parquet com amplificação de leitura alta (`PARTITION_THRESHOLD`) regravados com um arquivo por janela,
+    numa passada: sem isso cada janela decodifica a fonte inteira. Cada lado é decidido sozinho pela amplificação
+    dele por row group (só chave inteira), também quando o plano está alinhado pelos row groups do outro (o lado em
+    ordem tem amplificação ~1 e fica como está). Devolve o plano e as fontes novos e as fontes criadas aqui (quem
+    chama apaga as pastas)."""
     sides = [ls, rs]
     files = list(plan.files)
     owned: list[Source] = []
-    if not plan.aligned_to_row_groups and len(plan.windows) > 2:
+    if len(plan.windows) > 2:
         opts = read_options if read_options is not None else (ReadOptions(), ReadOptions())
         for i, src in enumerate(sides):
-            if src.is_parquet and plan.read_amplification[i] > PARTITION_THRESHOLD:
+            if src.is_parquet and plan.row_group_amplification[i] > PARTITION_THRESHOLD:
                 new, groups = partition_source(
                     src, plan.windows, keys, opts[i], chunk_bytes=plan.memory_limit // _STAGE_DIVISOR
                 )

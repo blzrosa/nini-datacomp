@@ -10,6 +10,19 @@ Formato: [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/); versões: 
   lento que ler a mais. Com a chave ordenada, sem diferença. Fontes fora de ordem com amplificação entre 3 e 15 voltam a
   ser lidas sem staging, como na 0.3.0.
 
+- `read_amplification` agora também é informada para chave de texto (e outros tipos não inteiros) em fontes Parquet com
+  mais de um arquivo: estimada pelas faixas de chave de cada arquivo, contando o arquivo inteiro (superestima com vários
+  row groups por arquivo). Só informa: o staging continua decidido pela amplificação por row group (chave inteira), porque
+  em teste sintético com chave de texto ele foi mais lento. Antes era `nan` aí.
+- O staging agora grava 1 arquivo por janela (antes, 1 por arquivo de origem e fatia: ~16 por janela). Uma segunda
+  passada junta os arquivos de cada janela e apaga os pequenos; a leitura das janelas ficou ~5x mais rápida (8 janelas:
+  1,6 s com 16 arquivos, 0,32 s com 1) e a espera de leitura num teste sintético com chave de texto (2M x 84) caiu de
+  ~20 s para ~0,7 s. Em compensação a junção relê e regrava a fonte, e o ganho não cobriu o custo nesse teste (total
+  34 a 39 s com staging contra 22 s sem), então o staging continua só para chave inteira. Pico de disco temporário
+  ~1,9 GB nesse teste (os dois lados).
+- O staging passa a ser decidido por lado, também quando o plano está alinhado pelos row groups do outro lado: uma
+  fonte em ordem de um lado e outra embaralhada do outro agora reparticiona só a embaralhada (se passar de 15).
+
 ### Para quem desenvolve
 - `tools/make_data.py`: perfil `wide84`; `tools/bench_hash.py`: casos `NxMw`/`NxMwu`, `--window-rows`, `--out-json`;
   `tools/diag_read_split.py` e `tools/relayout.py` (diagnóstico da leitura). Estudo em

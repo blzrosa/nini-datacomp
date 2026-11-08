@@ -207,6 +207,9 @@ class Plan:
     # por lado: linhas que as janelas decodificam (somadas) / linhas do lado; 1.0 = cada linha lida uma vez, nan = sem
     # estatística de row group para dizer
     read_amplification: tuple[float, float] = (math.nan, math.nan)
+    # o mesmo só pelas estatísticas de row group (chave inteira): é o que decide o staging. Com chave de texto é nan
+    # mesmo havendo a estimativa por arquivo acima: nela o staging piorou o tempo (leitura_otimizacao.md)
+    row_group_amplification: tuple[float, float] = (math.nan, math.nan)
 
     def frame_bytes(self, left: pl.DataFrame, right: pl.DataFrame) -> int:
         """O tamanho de uma parte lida (os dois lados), pelos bytes por linha do plano: sem o ``estimated_size`` do
@@ -563,6 +566,17 @@ def _read_amplification(source: Source, keys: Sequence[str], windows: list[Windo
     return total / rows
 
 
+def _file_amplification(source: Source, per_window: list[tuple[int, ...]] | None, rows: int) -> float:
+    """O mesmo da `_read_amplification`, no grão do arquivo, para quando não há estatística de row group (chave de texto
+    ou de outro tipo): as linhas dos arquivos que cada janela abre, somadas, sobre as ``rows`` do lado. Só existe com
+    mais de um arquivo (``per_window`` vem das faixas de cada arquivo). Superestima se um arquivo tem vários
+    row groups."""
+    if per_window is None or rows <= 0:
+        return math.nan
+    size = [sum(row_groups(path)) for path in source.files]
+    return sum(size[i] for opened in per_window for i in opened) / rows
+
+
 def _all_groups(source: Source) -> list[int]:
     return [n for path in source.files for n in row_groups(path)]
 
@@ -658,11 +672,12 @@ def plan_windows(
     if not aligned:
         notes.append("fronteiras por amostra das chaves (fora do começo dos row groups)")
     files = (_window_files(ranges[0], windows), _window_files(ranges[1], windows))
-    amplification = (
-        _read_amplification(left, keys, windows, nl),
-        _read_amplification(right, keys, windows, nr),
+    by_group = (_read_amplification(left, keys, windows, nl), _read_amplification(right, keys, windows, nr))
+    amplification = tuple(
+        a if not math.isnan(a) else _file_amplification(src, w, n)
+        for a, src, w, n in zip(by_group, (left, right), files, (nl, nr), strict=True)
     )
     return Plan(
         windows, rows_per_window, budget, bpr, rows, base_name, aligned, notes, files, **extra,
-        read_amplification=amplification,
+        read_amplification=(amplification[0], amplification[1]), row_group_amplification=by_group,
     )  # fmt: skip
