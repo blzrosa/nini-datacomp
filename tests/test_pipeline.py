@@ -364,6 +364,68 @@ def test_partitioned_staging_skipped_below_threshold(tmp_path: Path) -> None:
     assert got.mismatched == len([i for i in range(100, 4000) if i % 7 == 0])
 
 
+def test_stage_partitioned_one_file_per_window(tmp_path: Path) -> None:
+    """Vários arquivos de origem e fatias pequenas: cada janela acaba com um arquivo só, com as linhas dela, e os
+    arquivos intermediários somem (o disco não guarda a fonte duas vezes)."""
+    lake = _write_text_lake(tmp_path / "lake", shuffled=True, text=False)
+    src = open_source(lake)
+    plan = plan_windows(src, src, ["id"], window_rows=500)
+    staged = stage_partitioned(src, plan.windows, ["id"], ReadOptions(temp_dir=tmp_path), chunk_bytes=1)
+    assert len(staged.groups) == len(plan.windows)
+    assert all(len(g) == 1 for g in staged.groups)
+    assert len(staged.files) == len(plan.windows)
+    assert sorted(p.name for p in staged.path.rglob("*.parquet")) == sorted(f.name for f in staged.files)
+    ids: list[int] = []
+    for w, group in zip(plan.windows, staged.groups, strict=True):
+        got = pl.read_parquet(staged.files[group[0]])["id"]
+        pred = w.predicate(["id"], [pl.Int64()])
+        assert pred is None or got.len() == got.to_frame().filter(pred).height
+        ids += got.to_list()
+    assert sorted(ids) == list(range(4000))
+    staged.cleanup()
+
+
+def test_stage_partitioned_merge_keeps_rows_and_order_free(tmp_path: Path) -> None:
+    """Fatias minúsculas (muitos arquivos por janela) e fatias padrão dão as mesmas linhas por janela, e a pasta
+    temporária fica só com os ``w*.parquet`` (sem subpastas com arquivos)."""
+    lake = _write_text_lake(tmp_path / "lake", shuffled=True, text=False)
+    src = open_source(lake)
+    plan = plan_windows(src, src, ["id"], window_rows=500)
+    tiny = stage_partitioned(src, plan.windows, ["id"], ReadOptions(temp_dir=tmp_path), chunk_bytes=1)
+    default = stage_partitioned(src, plan.windows, ["id"], ReadOptions(temp_dir=tmp_path))
+    try:
+        assert tiny.groups == default.groups
+        for a, b in zip(tiny.groups, default.groups, strict=True):
+            for i, j in zip(a, b, strict=True):
+                left = pl.read_parquet(tiny.files[i]).sort("id")
+                assert left.equals(pl.read_parquet(default.files[j]).sort("id"))
+        for staged in (tiny, default):
+            assert sorted(p.name for p in staged.path.iterdir()) == sorted(f.name for f in staged.files)
+            assert all(p.name.startswith("w") and p.suffix == ".parquet" for p in staged.path.iterdir())
+    finally:
+        tiny.cleanup()
+        default.cleanup()
+
+
+def test_stage_partitioned_empty_window(tmp_path: Path) -> None:
+    """Uma janela sem linhas não tem arquivo (``groups[i] == ()``); as outras têm um só."""
+    lake = _write_text_lake(tmp_path / "lake", shuffled=True, text=False)
+    src = open_source(lake)
+    wins = [
+        windows.Window(0, hi=(2000,)),
+        windows.Window(1, lo=(5000,), hi=(6000,)),  # fora do intervalo das chaves (0..3999)
+        windows.Window(2, lo=(2000,)),
+    ]
+    staged = stage_partitioned(src, wins, ["id"], ReadOptions(temp_dir=tmp_path), chunk_bytes=1)
+    try:
+        assert staged.groups[1] == ()
+        assert len(staged.files) == 2
+        assert [len(g) for g in staged.groups] == [1, 0, 1]
+        assert sum(pl.read_parquet(f).height for f in staged.files) == 4000
+    finally:
+        staged.cleanup()
+
+
 def test_stage_partitioned_cleanup(tmp_path: Path) -> None:
     lp, rp = _write_pair(tmp_path, shuffled=True)
     src = open_source(lp)

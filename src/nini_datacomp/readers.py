@@ -197,6 +197,16 @@ class Staged:
             self._dir = None
 
 
+def _merge_window(files: list[Path], out: Path) -> Path:
+    """Os arquivos de uma janela num só (e apaga os pequenos, para o disco não guardar a fonte duas vezes)."""
+    if len(files) == 1:
+        return files[0].replace(out)
+    pl.concat([pl.read_parquet(f) for f in files], rechunk=False).write_parquet(out, compression="lz4", statistics=True)
+    for f in files:
+        f.unlink()
+    return out
+
+
 def stage_partitioned(
     source: Source,
     windows: Sequence[Window],
@@ -209,7 +219,9 @@ def stage_partitioned(
     janela (`Staged.groups` diz quais arquivos são de qual janela). Uma janela sem linhas não tem arquivo. Assim ler a
     janela k abre só as linhas dela, não a fonte inteira (o Polars não pula row groups de uma fonte fora de ordem).
     A fonte é lida em fatias de ~``chunk_bytes`` em memória (o ``sink_parquet`` em streaming passa de 4x o que lê: o
-    pico dele acompanha o tamanho do arquivo, não um limite), então cada janela fica com um arquivo por fatia."""
+    pico dele acompanha o tamanho do arquivo, não um limite), então cada janela sai da primeira passada com um arquivo
+    por fatia, e uma segunda passada junta os arquivos de cada janela num só (uma janela cabe na memória por
+    construção): medido, abrir 16 arquivos pequenos por janela custava ~5x a leitura de um."""
     schema = source.scan(source.files[:1]).collect_schema()
     dtypes = [schema[k] for k in keys]
     index = _window_index([w.predicate(keys, dtypes) for w in windows])
@@ -237,10 +249,13 @@ def stage_partitioned(
                         job.result()
                 for i, out in outs.items():
                     found[i].append(out)
-        for files in found:
+        for i, files in enumerate(found):
             first = len(staged.files)
-            staged.files += files
+            staged.files += [_merge_window(files, staged.path / f"w{i:05d}.parquet")] if files else []
             staged.groups.append(tuple(range(first, len(staged.files))))
+        for folder in staged.path.iterdir():
+            if folder.is_dir():
+                folder.rmdir()  # as subpastas por origem ficaram vazias após a junção
     except BaseException:
         staged.cleanup()
         raise

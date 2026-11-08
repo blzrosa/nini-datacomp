@@ -249,8 +249,8 @@ linhas decodificadas divididas pelas linhas do lado (1,0 = cada linha é lida um
 vezes); é o valor do plano, antes do staging. Está em `execution`, não em `to_dict()`/`to_json()`. `nan` quando não foi medida.
 
 Quando a fonte é Parquet, a amplificação passa de 15 e há mais de 2 janelas, o nini-datacomp faz o **staging por
-janela**: regrava a fonte numa pasta temporária, com um arquivo por janela (e por fatia lida), numa só passada. Depois,
-ler a janela k abre só os arquivos dela. A pasta fica no `temp_dir` do `ReadOptions` (o do sistema por padrão), ocupa
+janela**: regrava a fonte numa pasta temporária, com um arquivo por janela (as fatias lidas são juntas por janela ao fim). Depois,
+ler a janela k abre só o arquivo dela. A pasta fica no `temp_dir` do `ReadOptions` (o do sistema por padrão), ocupa
 em disco algo próximo do tamanho da fonte (por lado reparticionado) e some no fim da comparação, mesmo com erro. A
 fonte é lida em fatias de `memory_limit / 10`, então o pico continua dentro do orçamento. O que aconteceu fica em
 `result.execution.notes` (`"fontes reparticionadas por janela"`).
