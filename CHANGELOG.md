@@ -4,6 +4,11 @@ Formato: [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/); versões: 
 
 ## [Não lançado]
 
+## [0.4.1] — 2026-11-09
+
+Versão de correção/ajuste (0.4.0 → 0.4.1): muda quando o staging por janela é usado e melhora o que ele grava e informa,
+sem alterar a API.
+
 ### Para quem usa
 - Staging por janela agora só entra com amplificação de leitura > 15 (era > 3). Medido contra a 0.3.0 em dados
   sintéticos, ele só ganhou onde a amplificação é alta (10M x 50: 21 a 41); com 3 a 10 regravar a fonte foi até 2,2x mais
