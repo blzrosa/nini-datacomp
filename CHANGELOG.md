@@ -17,6 +17,8 @@ Versão menor (0.4.1 → 0.5.0): muda onde e como a comparação roda quando a f
 - O staging volta a gravar os arquivos como saem da primeira passada (um por fatia e janela): a junção da 0.4.1 (um
   arquivo por janela) saiu porque deixou o staging lento. 10M x 50 embaralhado, 1GB: 40 s e 751 MiB (era ~125 s com a
   junção); 2GB: 27 s e 1772 MiB (era ~60 s).
+- Piso do Polars sobe de 1.30 para 1.32.3: do 1.30 ao 1.32.0 (testado no 1.30, 1.31 e 1.32.0) o leitor Parquet em
+  streaming do Polars entra em pânico (`offset + length <= self.length`) na leitura com sobra e com `only_common_keys`.
 - `isolation="auto"` também roda à parte quando há staging (a fonte vai ser reparticionada); com um lado `DataFrame`
   o staging segue neste processo. Chave de texto é planejada pelo rodapé do Parquet, sem ler a coluna.
 

@@ -31,7 +31,7 @@ classifiers = [
 ]
 dependencies = [
     "numpy>=1.24",
-    "polars>=1.30",
+    "polars>=1.32.3",
     "pydantic>=2.7",
     # sem pyarrow: as colunas vêm do Polars pela interface C do Arrow (PyCapsule), em core/arrow_c.py
 ]
