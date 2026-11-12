@@ -19,7 +19,18 @@ import numpy as np
 import polars as pl
 
 from ._native import lib, ptr
-from .readers import DEFAULT_STAGE_BYTES, SUFFIXES, FileFormat, ReadOptions, Staged, format_of, stage, stage_partitioned
+from .readers import (
+    DEFAULT_STAGE_BYTES,
+    SUFFIXES,
+    WINDOW_COLUMN,
+    FileFormat,
+    ReadOptions,
+    Staged,
+    StageLayout,
+    format_of,
+    stage,
+    stage_partitioned,
+)
 
 if TYPE_CHECKING:
     from .windows import Window
@@ -52,6 +63,9 @@ class Source:
     # o que se aplica depois de ler (em toda leitura de `scan`): with_columns (conversões de tipo) e renomeações
     steps: tuple[Step, ...] = ()
     staged: Staged | None = None  # a pasta temporária com o Parquet convertido (formatos que não são Parquet)
+    # o Parquet reparticionado "sorted" (`partition_source`): a coluna com o índice da janela de cada linha; a janela
+    # k é lida por ``coluna == k`` (e a coluna sai)
+    window_column: str | None = None
 
     @property
     def is_parquet(self) -> bool:
@@ -96,12 +110,21 @@ class Source:
 
 
 def partition_source(
-    source: Source, windows: Sequence[Window], keys: Sequence[str], options: ReadOptions, *, chunk_bytes: int
+    source: Source,
+    windows: Sequence[Window],
+    keys: Sequence[str],
+    options: ReadOptions,
+    *,
+    chunk_bytes: int,
+    layout: StageLayout = "window",
 ) -> tuple[Source, list[tuple[int, ...]]]:
-    """``source`` regravada com um arquivo por janela (`readers.stage_partitioned`): a nova fonte (sem passos: as
+    """``source`` regravada por janela (`readers.stage_partitioned`, no ``layout``): a nova fonte (sem passos: as
     conversões já estão nos arquivos) e, por janela, os índices dos arquivos dela. `Source.cleanup` apaga a pasta."""
-    staged = stage_partitioned(source, windows, keys, options, chunk_bytes=chunk_bytes)
-    return Source(_scan([str(f) for f in staged.files]), tuple(staged.files), staged=staged), staged.groups
+    staged = stage_partitioned(source, windows, keys, options, chunk_bytes=chunk_bytes, layout=layout)
+    lazy = _scan([str(f) for f in staged.files])
+    if layout == "sorted":
+        return Source(lazy, tuple(staged.files), staged=staged, window_column=WINDOW_COLUMN), staged.groups
+    return Source(lazy, tuple(staged.files), staged=staged), staged.groups
 
 
 def _scan(files: list[str]) -> pl.LazyFrame:

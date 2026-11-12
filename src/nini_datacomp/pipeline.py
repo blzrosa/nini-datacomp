@@ -32,8 +32,9 @@ from .core.keys import Alignment, align_frames, align_keys, align_pieces
 from .core.memory import empty
 from .core.rowhash import Part, diff_pairs, row_hash, row_hash_parts
 from .io import Source, SourceLike, open_source, partition_source
-from .readers import ReadOptions
-from .windows import PARTITION_THRESHOLD, Plan, Window, plan_windows
+from .isolation import NeedsIsolation
+from .readers import ReadOptions, StageLayout
+from .windows import PARTITION_THRESHOLD, Plan, Window, key_between, plan_windows
 
 __all__ = [
     "Casting",
@@ -90,6 +91,28 @@ class _Timer:
         return now
 
 
+class _Carry:
+    """O estado da leitura com sobra de um lado: o ponteiro para o próximo row group a ler, as linhas que sobraram da
+    janela anterior (``rest``) e quantas linhas já foram decodificadas."""
+
+    def __init__(self, bounds: Sequence[tuple[int, int]]) -> None:
+        self.bounds = bounds
+        self.next = 0
+        self.rest: pl.DataFrame | None = None
+        self.decoded = 0
+
+    def take(self, hi: int | None) -> tuple[int, int] | None:
+        """O intervalo de chaves (mínimo do primeiro, máximo do último) dos row groups ainda não lidos que começam
+        antes de ``hi`` (todos, se ``hi`` é None); None se não há nenhum."""
+        start = end = self.next
+        while end < len(self.bounds) and (hi is None or self.bounds[end][0] < hi):
+            end += 1
+        if end == start:
+            return None
+        self.next = end
+        return self.bounds[start][0], self.bounds[end - 1][1]
+
+
 class WindowReader:
     """Itera ``(janela, esquerda, direita)`` com os dois lados de cada janela já em memória; lê a seguinte em paralelo.
 
@@ -131,11 +154,59 @@ class WindowReader:
         self.engine: Engine = engine
         self.timer = _Timer()
         self.window_bytes = 0  # maior parte lida (os dois lados), pelos bytes por linha do plano
+        self._carry: list[_Carry | None] = [None, None]
+
+    @property
+    def decoded_with_carry(self) -> tuple[int | None, int | None]:
+        """Por lado, as linhas que a leitura com sobra decodificou (None: o lado foi lido por faixa da chave)."""
+        return (
+            None if self._carry[0] is None else self._carry[0].decoded,
+            None if self._carry[1] is None else self._carry[1].decoded,
+        )
+
+    def _read_with_carry(
+        self, carry: _Carry, src: Source, window: Window, columns: list[str] | None, files: tuple[int, ...] | None
+    ) -> pl.DataFrame:
+        """A janela de um lado lido com sobra: decodifica só os row groups que ainda não foram lidos e começam antes do
+        fim da janela, inteiros (o predicado cobre os row groups, não a janela), e junta a sobra da janela anterior na
+        frente. As linhas a partir do fim da janela (``hi``) ficam de sobra para a seguinte: os row groups estão em
+        ordem, então a chave está ordenada e a busca binária mais um ``slice`` (sem cópia) bastam."""
+        key = self.keys[0]
+        hi = None if window.hi is None else int(window.hi[0])
+        span = carry.take(hi)
+        parts: list[pl.DataFrame] = [] if carry.rest is None else [carry.rest]
+        if span is not None:
+            lf = src.scan([src.files[i] for i in files]) if files else src.lazy
+            lf = lf.filter(key_between(key, self.dtypes[0], *span))
+            new = (lf if columns is None else lf.select(columns)).collect(engine=self.engine)
+            carry.decoded += new.height
+            parts.append(new)
+        if not parts:  # nada a ler nem de sobra: zero linhas, com o schema certo
+            lf = src.lazy.filter(pl.lit(False))
+            parts.append((lf if columns is None else lf.select(columns)).collect(engine=self.engine))
+        frame = parts[0] if len(parts) == 1 else pl.concat(parts, rechunk=False)
+        carry.rest = None
+        if hi is None:
+            return frame
+        column = frame.get_column(key)
+        if column.is_sorted():
+            inside = column.search_sorted(hi, side="left")
+            if inside < frame.height:
+                carry.rest = frame.slice(inside)
+            return frame.slice(0, inside)
+        # row groups em ordem, mas linhas fora de ordem dentro deles: separa pelo valor (com cópia)
+        carry.rest = rest if (rest := frame.filter(pl.col(key) >= hi)).height else None
+        return frame.filter(pl.col(key) < hi)
 
     def _read_side(
-        self, src: Source, window: Window, columns: list[str] | None, files: tuple[int, ...] | None
+        self, side: int, src: Source, window: Window, columns: list[str] | None, files: tuple[int, ...] | None
     ) -> pl.DataFrame:
+        carry = self._carry[side]
+        if carry is not None:
+            return self._read_with_carry(carry, src, window, columns, files)
         pred = window.predicate(self.keys, self.dtypes)
+        if src.window_column is not None:  # reparticionada "sorted": a janela é ``coluna == k``
+            pred = pl.col(src.window_column) == window.index
         if src.frame is not None:  # em memória: filtrar o DataFrame não passa pelo planejador lazy
             frame = src.frame if pred is None else src.frame.filter(pred)
             return frame if columns is None else frame.select(columns)
@@ -149,6 +220,8 @@ class WindowReader:
         lf = lf if pred is None else lf.filter(pred)
         if columns is not None:
             lf = lf.select(columns)
+        elif src.window_column is not None:
+            lf = lf.drop(src.window_column)
         return lf.collect(engine=self.engine)
 
     def _read(self, task: tuple[Window, int]) -> tuple[Window, int, pl.DataFrame, pl.DataFrame, float]:
@@ -159,18 +232,24 @@ class WindowReader:
         if self.parallel_sides and self.left.frame is None:
             # os dois lados ao mesmo tempo: cada leitura do Polars de uma janela pequena (poucos row groups) não ocupa
             # todas as threads, e as duas juntas, sim (a memória é a mesma: os dois lados são lidos de qualquer jeito)
-            right = _side_pool().submit(self._read_side, self.right, window, cols_r, files_r)
-            lf = self._read_side(self.left, window, cols_l, files_l)
+            right = _side_pool().submit(self._read_side, 1, self.right, window, cols_r, files_r)
+            lf = self._read_side(0, self.left, window, cols_l, files_l)
             rf = right.result()
         else:
-            lf = self._read_side(self.left, window, cols_l, files_l)
-            rf = self._read_side(self.right, window, cols_r, files_r)
+            lf = self._read_side(0, self.left, window, cols_l, files_l)
+            rf = self._read_side(1, self.right, window, cols_r, files_r)
         self._track(lf, rf)
         return window, g, lf, rf, time.perf_counter() - t
 
     def pieces(self) -> Iterator[tuple[Window, int, pl.DataFrame, pl.DataFrame]]:
         """``(janela, grupo de colunas, esquerda, direita)``: janela a janela e, em cada uma, grupo a grupo."""
         tasks = [(w, g) for w in self.plan.windows for g in range(len(self.groups))]
+        # a leitura com sobra (windows.Plan.carry) só serve com um grupo de colunas e fonte em disco; começa do zero a
+        # cada passada pelas janelas
+        self._carry = [
+            _Carry(bounds) if bounds and len(self.groups) == 1 and src.frame is None else None
+            for bounds, src in zip(self.plan.carry, (self.left, self.right), strict=True)
+        ]
         if not self.prefetch or len(tasks) == 1:
             for task in tasks:
                 w, g, lf, rf, spent = self._read(task)
@@ -541,7 +620,10 @@ def _run(
     only_common_keys: bool = False,
     comparators: Mapping[str, Comparator] | None = None,
     read_options: tuple[ReadOptions, ReadOptions] | None = None,
+    isolate: bool = False,
 ) -> RowCounts:
+    """``isolate``: levanta ``NeedsIsolation`` se o plano diz que, neste processo, nem um row group cabe no
+    memory_limit (o chamador roda tudo num worker com o alocador ajustado; ``isolation.py``)."""
     t0 = time.perf_counter()
     keys = list(on)
     ls, rs = sources if sources is not None else (open_source(left), open_source(right))
@@ -566,6 +648,8 @@ def _run(
     setup_s = t - t0  # abrir as fontes, alinhar os schemas, as conversões de tipo
     plan = plan_windows(ls, rs, keys, memory_limit, window_rows=window_rows)
     plan_s = time.perf_counter() - t
+    if isolate and not plan.fits_inline:
+        raise NeedsIsolation
 
     t = time.perf_counter()
     plan, ls, rs, owned = _repartition(plan, ls, rs, keys, read_options)
@@ -628,7 +712,7 @@ def _run(
             src.cleanup()
 
 
-_STAGE_DIVISOR = 10  # o staging lê fatias de memory_limit / 10 (o pico real é ~3x a fatia: cópia, partição, escrita)
+STAGE_LAYOUT: StageLayout = "window"  # como o staging grava as janelas (`readers.StageLayout`)
 
 
 def _repartition(
@@ -647,8 +731,9 @@ def _repartition(
         for i, src in enumerate(sides):
             if src.is_parquet and plan.row_group_amplification[i] > PARTITION_THRESHOLD:
                 new, groups = partition_source(
-                    src, plan.windows, keys, opts[i], chunk_bytes=plan.memory_limit // _STAGE_DIVISOR
-                )
+                    src, plan.windows, keys, opts[i], chunk_bytes=plan.stage_chunk_bytes,
+                    layout=STAGE_LAYOUT,
+                )  # fmt: skip
                 sides[i] = new
                 files[i] = groups
                 owned.append(new)

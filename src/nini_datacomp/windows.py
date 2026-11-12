@@ -35,9 +35,10 @@ from typing import Any
 
 import polars as pl
 
+from .core.allocator import Mode, mode
 from .io import KeyStats, Source, Where, key_stats, row_groups
 
-__all__ = ["MIN_MEMORY", "Plan", "Window", "parse_memory_limit", "plan_windows"]
+__all__ = ["MIN_MEMORY", "Plan", "Window", "key_between", "parse_memory_limit", "plan_windows"]
 
 AUTO_FRACTION = 0.25  # "auto": 1/4 da memória livre...
 AUTO_CAP = 2 * 1024**3  # ... até 2 GiB
@@ -59,10 +60,31 @@ IN_FLIGHT = 4.0
 # Com 10 ms e 3 grupos, 1M x 300 coluna a coluna ficou em 909 ± 55 MB (até 968, acima do limite de 954) com IN_FLIGHT
 # 3,5 e com 4 (a janela é a mesma); com 5 grupos (o que este fator dá ali), 700 ± 26 MB (até 718), ~7% mais lento.
 GROUP_IN_FLIGHT = 6.75
+# Bytes fixos por coluna lida, por janela (buffers de página e de decodificação, que não crescem com as linhas): o
+# excesso de pico cresce com a largura da tabela mesmo com a janela de ~1 row group. Valores iniciais 0 (o plano de
+# antes); a calibrar com tools/bench_hash.py --via-compare --allocator default (ver o passo 3 do SPEC).
+GROUP_COLUMN_BYTES = 0  # modo tuned, janela de 1 row group lida em grupos de colunas (o worker)
+DEFAULT_COLUMN_BYTES = 0  # modo default (alocador padrão do Polars)
+# Fatia do staging (`_stage_chunk_bytes`): memory_limit / STAGE_DIVISOR no modo tuned (o pico real é ~3x a fatia: cópia,
+# partição e escrita). No modo default a fatia sai do orçamento já descontado: (limite x DEFAULT_SAFETY - DEFAULT_BASE).
+STAGE_DIVISOR = 10
+DEFAULT_STAGE_DIVISOR = 10
+MIN_STAGE_CHUNK = 16 * 1024**2
 KERNEL_BYTES_PER_ROW = 32  # pares (8), hashes dos dois lados (16) e tabelas, por linha da janela
 # amplificação de leitura (Plan.read_amplification) acima da qual a fonte é reparticionada. Medido (docs/benchmarks/
 # leitura_otimizacao.md): com amplificação 3 a 10 regravar custou mais que ler a mais (até 2,2x); com 21 ou mais ganhou.
 PARTITION_THRESHOLD = 15.0
+# Modo "default" do alocador (o mimalloc do Polars guardando a memória liberada por 1000 ms; core/allocator.py).
+# Medido em 2026-11-11 (16 threads): o pico é ~ DEFAULT_BASE (o processo e o que o mimalloc guarda) +
+# DEFAULT_IN_FLIGHT x bytes por linha dos dois lados x linhas da janela. Valores iniciais; a calibrar com
+# tools/bench_rows.py --allocator default.
+DEFAULT_SAFETY = 0.95
+DEFAULT_BASE = 500 * 1024**2
+DEFAULT_IN_FLIGHT = 5.0  # 4,0 com a leitura por faixa; com a sobra (que segura os buffers da leitura anterior) o pico
+# de 10M x 50 com 1GB chegou a 976 MiB (limite 954); 4,5 ainda a 986 numa de 5 execuções; 5,0: ver docs/benchmarks
+NO_FIT_NOTE = (
+    "com o alocador padrão do Polars nem um row group cabe no memory_limit: a comparação precisa de um processo isolado"
+)
 SAMPLE_ROWS = 10_000  # linhas lidas (só das colunas de largura variável) para medir os bytes por linha
 SAMPLE_KEYS = 200_000  # chaves da amostra que define as fronteiras quando a fonte não está em ordem
 _UNITS = {
@@ -149,6 +171,12 @@ def _show(bound: tuple[Any, ...]) -> str:
     return repr(bound[0]) if len(bound) == 1 else repr(bound)
 
 
+def key_between(key: str, dtype: pl.DataType, lo: int, hi: int) -> pl.Expr:
+    """``lo <= chave <= hi`` (os dois inclusivos): o Polars usa as estatísticas dos row groups para pular os de fora."""
+    col = pl.col(key)
+    return (col >= _lit(lo, dtype)) & (col <= _lit(hi, dtype))
+
+
 @dataclass(frozen=True)
 class Window:
     index: int
@@ -210,6 +238,14 @@ class Plan:
     # o mesmo só pelas estatísticas de row group (chave inteira): é o que decide o staging. Com chave de texto é nan
     # mesmo havendo a estimativa por arquivo acima: nela o staging piorou o tempo (leitura_otimizacao.md)
     row_group_amplification: tuple[float, float] = (math.nan, math.nan)
+    # falso se, com o alocador padrão do Polars, nem um row group cabe no memory_limit (decide o worker; api.py)
+    fits_inline: bool = True
+    # por lado: (mínimo, máximo) da chave de cada row group, em ordem de leitura, se o lado pode ser lido com sobra
+    # (``WindowReader``: cada row group é lido uma vez, e as linhas depois do fim da janela entram na janela seguinte);
+    # None = leitura por faixa da chave, como sempre
+    carry: tuple[tuple[tuple[int, int], ...] | None, tuple[tuple[int, int], ...] | None] = (None, None)
+    # bytes de cada fatia lida pelo staging (`pipeline._repartition`); a regra do orçamento: `_stage_chunk_bytes`
+    stage_chunk_bytes: int = MIN_STAGE_CHUNK
 
     def frame_bytes(self, left: pl.DataFrame, right: pl.DataFrame) -> int:
         """O tamanho de uma parte lida (os dois lados), pelos bytes por linha do plano: sem o ``estimated_size`` do
@@ -403,33 +439,72 @@ def _sampled_bounds(
     return [tuple(row) for row in sample[[p for p in positions if p < sample.height]].iter_rows()]
 
 
+def _stage_chunk_bytes(memory_limit: int, allocator: Mode = "tuned") -> int:
+    """Bytes de cada fatia que o staging lê. ``tuned``: ``memory_limit / STAGE_DIVISOR``. ``default``: do orçamento já
+    descontado do que o alocador guarda (``DEFAULT_SAFETY``/``DEFAULT_BASE``), não menos que ``MIN_STAGE_CHUNK``."""
+    if allocator == "default":
+        return max(MIN_STAGE_CHUNK, int(memory_limit * DEFAULT_SAFETY - DEFAULT_BASE) // DEFAULT_STAGE_DIVISOR)
+    return memory_limit // STAGE_DIVISOR
+
+
 def _window_size(
-    left: Source, right: Source, bpr: tuple[float, float], budget: int, *, window_rows: int | None, columns: int
-) -> tuple[int, int, list[str]]:
-    """Linhas por janela (pelo orçamento, ou ``window_rows``), em quantos grupos de colunas ler cada janela, e as
-    notas do plano sobre isso."""
+    left: Source,
+    right: Source,
+    bpr: tuple[float, float],
+    budget: int,
+    *,
+    window_rows: int | None,
+    columns: int,
+    allocator: Mode = "tuned",
+) -> tuple[int, int, list[str], bool]:
+    """Linhas por janela (pelo orçamento, ou ``window_rows``), em quantos grupos de colunas ler cada janela, as notas
+    do plano sobre isso e se a janela cabe no próprio processo (``Plan.fits_inline``).
+
+    ``allocator="tuned"``: as constantes calibradas para o mimalloc devolvendo a memória em 10 ms (um processo
+    iniciado assim, ou o worker). ``"default"``: o mimalloc do Polars como vem (guarda a memória 1000 ms): janelas
+    menores, pelo ``DEFAULT_*``; se nem um row group cabe, ``fits_inline`` é falso e o pipeline vai para um worker."""
     if window_rows is not None:
         if window_rows < 1:
             raise ValueError("window_rows deve ser >= 1")
-        return window_rows, 1, []
+        return window_rows, 1, [], True
     per_row = IN_FLIGHT * (bpr[0] + bpr[1]) + 2 * KERNEL_BYTES_PER_ROW
     rows_per_window = max(1, int(budget * SAFETY / per_row))
     floor = _largest_row_group(left, right)
+    fits_inline = True
+    notes: list[str] = []
+    if allocator == "default":
+        avail = budget * DEFAULT_SAFETY - DEFAULT_BASE - DEFAULT_COLUMN_BYTES * columns
+        rows = int(avail / (DEFAULT_IN_FLIGHT * (bpr[0] + bpr[1])))
+        if rows >= max(floor, 1):
+            return rows, 1, [], True
+        # nem um row group cabe com o que o mimalloc guarda: o plano segue com as constantes "tuned", que é como o
+        # worker (com o alocador ajustado) vai planejar
+        fits_inline = False
+        notes.append(NO_FIT_NOTE)
     if rows_per_window >= floor:
-        return rows_per_window, 1, []
+        return rows_per_window, 1, notes, fits_inline
     # O Polars decodifica o row group inteiro mesmo para uma parte dele: janelas menores que um row group só repetem
     # o trabalho (medido na fase 2: 10M x 300 com janelas de ~52 mil linhas e row groups de 100 mil, cada um lido duas
     # vezes). Então a janela fica com um row group, e a memória cabe lendo as colunas em grupos (o hash de linha
     # continua de um grupo para o outro: mesmo resultado).
     per_row_group = GROUP_IN_FLIGHT * (bpr[0] + bpr[1]) + 2 * KERNEL_BYTES_PER_ROW
-    groups = -(-floor // max(1, int(budget * SAFETY / per_row_group)))
-    notes = [
+    n_columns = max(columns, 1)
+    if GROUP_COLUMN_BYTES:
+        # cada grupo guarda 1/groups das colunas: o termo por coluna vale para as colunas de um grupo
+        groups = n_columns
+        for g in range(1, n_columns + 1):
+            if floor * per_row_group / g + GROUP_COLUMN_BYTES * -(-n_columns // g) <= budget * SAFETY:
+                groups = g
+                break
+    else:
+        groups = -(-floor // max(1, int(budget * SAFETY / per_row_group)))
+    notes.append(
         f"o memory_limit pede janelas de {rows_per_window:,} linhas, menos que um row group ({floor:,}): cada janela "
         f"leva um row group, lido em {min(groups, max(columns, 1))} grupos de colunas"
-    ]
+    )
     if groups > columns:
         notes.append("nem uma coluna por vez cabe no memory_limit: o pico vai passar dele")
-    return floor, max(1, min(groups, columns)), notes
+    return floor, max(1, min(groups, columns)), notes, fits_inline
 
 
 FileRange = tuple[Any, Any, bool]  # (menor e maior valor da 1ª coluna da chave, se tem chave nula) de um arquivo
@@ -480,6 +555,8 @@ class _FooterKeys:
     nulls: bool
     firsts: pl.DataFrame | None
     ranges: list[FileRange] | None
+    # (mínimo, máximo) da chave em cada row group (com linhas), na ordem de leitura; só com os row groups em ordem
+    bounds: tuple[tuple[int, int], ...] | None = None
 
 
 def _source_name(source: Source, column: str) -> str | None:
@@ -528,6 +605,7 @@ def _footer_keys(source: Source, keys: Sequence[str]) -> _FooterKeys | None:
             hi = max((g.max for g in valued if g.max is not None), default=None)
             ranges.append((lo, hi, any((g.nulls or 0) > 0 for g in stats)))
     firsts = None
+    bounds: tuple[tuple[int, int], ...] | None = None
     ordered = all(g.min is not None and g.max is not None for g in groups) and all(
         a.max is not None and b.min is not None and a.max < b.min for a, b in pairwise(groups)
     )
@@ -536,7 +614,12 @@ def _footer_keys(source: Source, keys: Sequence[str]) -> _FooterKeys | None:
         firsts = pl.DataFrame(
             {"__i": pl.Series(starts, dtype=pl.UInt32), keys[0]: pl.Series([g.min for g in groups], dtype=dtype)}
         )
-    return _FooterKeys(nulls, firsts, ranges)
+    # para a leitura com sobra a ordem dos arquivos não importa (um `extra-*` com chaves altas pode vir antes do resto):
+    # basta as faixas dos row groups, ordenadas pelo mínimo, não se sobreporem
+    spans = sorted(((g.min, g.max) for g in groups if g.min is not None and g.max is not None), key=lambda b: b[0])
+    if len(spans) > 1 and all(a[1] < b[0] for a, b in pairwise(spans)):
+        bounds = tuple(spans)
+    return _FooterKeys(nulls, firsts, ranges, bounds)
 
 
 def _read_amplification(source: Source, keys: Sequence[str], windows: list[Window], rows: int) -> float:
@@ -589,10 +672,12 @@ def plan_windows(
     *,
     window_rows: int | None = None,
     sample_rows: int = SAMPLE_ROWS,
+    allocator: Mode | None = None,
 ) -> Plan:
     """As janelas para comparar ``left`` e ``right`` pela chave ``keys`` dentro de ``memory_limit``.
 
-    ``window_rows`` (avançado) fixa as linhas por janela em vez de calculá-las pelo orçamento. A memória do
+    ``allocator``: o modo do alocador do Polars (``core.allocator.mode()`` se ``None``). ``window_rows`` (avançado)
+    fixa as linhas por janela em vez de calculá-las pelo orçamento. A memória do
     planejamento não cresce com a tabela: só as contagens, a chave do começo de cada row group e uma amostra limitada.
     """
     if not keys:
@@ -628,11 +713,15 @@ def plan_windows(
     null_l, null_r = bool(null_l.item()), bool(null_r.item())
     bpr = (bl, br)
     column_bytes = {c: cl.get(c, 0.0) + cr.get(c, 0.0) for c in {*cl, *cr} if c not in keys}
-    rows_per_window, groups, notes = _window_size(
-        left, right, bpr, budget, window_rows=window_rows, columns=len(column_bytes)
-    )
+    rows_per_window, groups, notes, fits_inline = _window_size(
+        left, right, bpr, budget, window_rows=window_rows, columns=len(column_bytes),
+        allocator=mode() if allocator is None else allocator,
+    )  # fmt: skip
     rows = (nl, nr)
-    extra = {"column_groups": groups, "column_bytes": column_bytes, "side_bytes": (cl, cr)}
+    extra = {
+        "column_groups": groups, "column_bytes": column_bytes, "side_bytes": (cl, cr), "fits_inline": fits_inline,
+        "stage_chunk_bytes": _stage_chunk_bytes(budget, mode() if allocator is None else allocator),
+    }  # fmt: skip
     single = Plan(
         [Window(0, with_nulls=True)], rows_per_window, budget, bpr, rows, "left", notes=notes, **extra,
         read_amplification=(1.0, 1.0),
@@ -672,12 +761,32 @@ def plan_windows(
     if not aligned:
         notes.append("fronteiras por amostra das chaves (fora do começo dos row groups)")
     files = (_window_files(ranges[0], windows), _window_files(ranges[1], windows))
-    by_group = (_read_amplification(left, keys, windows, nl), _read_amplification(right, keys, windows, nr))
-    amplification = tuple(
+    by_group = [_read_amplification(left, keys, windows, nl), _read_amplification(right, keys, windows, nr)]
+    amplification = [
         a if not math.isnan(a) else _file_amplification(src, w, n)
         for a, src, w, n in zip(by_group, (left, right), files, (nl, nr), strict=True)
-    )
+    ]
+    carry = _carry_sides(footer, base_name, groups, (null_l, null_r))
+    for i, groups_read in enumerate(carry):
+        if groups_read is not None:
+            by_group[i] = amplification[i] = 1.0  # cada row group decodificado uma vez
     return Plan(
         windows, rows_per_window, budget, bpr, rows, base_name, aligned, notes, files, **extra,
-        read_amplification=(amplification[0], amplification[1]), row_group_amplification=by_group,
+        read_amplification=(amplification[0], amplification[1]), row_group_amplification=(by_group[0], by_group[1]),
+        carry=carry,
     )  # fmt: skip
+
+
+def _carry_sides(
+    footer: Sequence[_FooterKeys | None], base: str, column_groups: int, nulls: tuple[bool, bool]
+) -> tuple[tuple[tuple[int, int], ...] | None, tuple[tuple[int, int], ...] | None]:
+    """O lado que não é a base: as fronteiras das janelas cortam os row groups dele, e cada janela os decodificaria de
+    novo. Com os row groups em ordem e sem chave nula (rodapé), um grupo de colunas e chave inteira de 1 coluna, cada
+    um é lido uma vez e o que passa do fim da janela fica de sobra (`pipeline.WindowReader`). ``None``: leitura por
+    faixa da chave, como sempre."""
+    out: list[tuple[tuple[int, int], ...] | None] = [None, None]
+    for i, name in enumerate(("left", "right")):
+        fk = footer[i]
+        if name != base and column_groups == 1 and fk is not None and fk.bounds and not (fk.nulls or nulls[i]):
+            out[i] = fk.bounds
+    return out[0], out[1]

@@ -9,8 +9,21 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from nini_datacomp.io import open_source, row_groups
-from nini_datacomp.windows import MIN_MEMORY, Plan, Window, parse_memory_limit, plan_windows
+from nini_datacomp import windows
+from nini_datacomp.io import Source, open_source, row_groups
+from nini_datacomp.windows import (
+    DEFAULT_BASE,
+    DEFAULT_IN_FLIGHT,
+    DEFAULT_SAFETY,
+    IN_FLIGHT,
+    KERNEL_BYTES_PER_ROW,
+    MIN_MEMORY,
+    SAFETY,
+    Plan,
+    Window,
+    parse_memory_limit,
+    plan_windows,
+)
 
 
 def _rows_per_window(plan: Plan, df: pl.DataFrame, keys: list[str]) -> list[int]:
@@ -58,6 +71,94 @@ def test_budget_decides_rows_per_window() -> None:
     assert small.rows_per_window < large.rows_per_window
     assert small.bytes_per_row[0] > 8  # id + texto
     assert len(small.windows) >= 1
+
+
+def test_default_mode_plans_smaller_windows() -> None:
+    """Com o mimalloc padrão (guarda a memória 1000 ms) as janelas são menores que as do modo ``tuned``, e o modo
+    ``tuned`` segue com as constantes de antes."""
+    # bytes por linha altos: com poucos, os 2 x KERNEL_BYTES_PER_ROW do "tuned" empatam as duas fórmulas
+    df = pl.DataFrame({"id": range(2_000), **{f"c{j}": range(2_000) for j in range(30)}})
+    src = open_source(df)
+    default = plan_windows(src, src, ["id"], memory_limit="1GiB", allocator="default")
+    tuned = plan_windows(src, src, ["id"], memory_limit="1GiB", allocator="tuned")
+    bpr = sum(default.bytes_per_row)
+    assert default.rows_per_window == int((1024**3 * DEFAULT_SAFETY - DEFAULT_BASE) / (DEFAULT_IN_FLIGHT * bpr))
+    assert tuned.rows_per_window == int(1024**3 * SAFETY / (IN_FLIGHT * bpr + 2 * KERNEL_BYTES_PER_ROW))
+    assert default.rows_per_window < tuned.rows_per_window
+    assert default.fits_inline
+    assert tuned.fits_inline
+
+
+def _tiny_source() -> Source:
+    return open_source(pl.DataFrame({"id": range(10)}))
+
+
+def test_default_mode_column_term_shrinks_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mesmos bytes por linha: com um termo por coluna, 300 colunas dão janela menor que 10 (modo default)."""
+    monkeypatch.setattr(windows, "DEFAULT_COLUMN_BYTES", 1024**2)
+    src = _tiny_source()
+    bpr = (200.0, 200.0)
+    narrow, *_ = windows._window_size(src, src, bpr, 1024**3, window_rows=None, columns=10, allocator="default")
+    wide, *_ = windows._window_size(src, src, bpr, 1024**3, window_rows=None, columns=300, allocator="default")
+    assert wide < narrow
+
+
+def test_default_mode_no_fit_when_column_term_exceeds_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    budget = 1024**3
+    monkeypatch.setattr(windows, "DEFAULT_COLUMN_BYTES", budget)
+    src = _tiny_source()
+    _, _, notes, fits_inline = windows._window_size(
+        src, src, (200.0, 200.0), budget, window_rows=None, columns=2, allocator="default"
+    )
+    assert not fits_inline
+    assert windows.NO_FIT_NOTE in notes
+
+
+def test_group_mode_column_term_raises_groups(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Com o row group maior que a janela do orçamento, o termo por coluna pede mais grupos de colunas, e nunca
+    mais grupos que colunas."""
+    pl.DataFrame({"id": range(5_000)}).write_parquet(tmp_path / "x.parquet", row_group_size=5_000)
+    src = open_source(tmp_path)
+    columns, bpr, budget = 8, (4000.0, 4000.0), 64 * 1024**2
+
+    def groups() -> int:
+        rows, n, _, _ = windows._window_size(src, src, bpr, budget, window_rows=None, columns=columns)
+        assert rows == windows._largest_row_group(src)
+        return n
+
+    monkeypatch.setattr(windows, "GROUP_COLUMN_BYTES", 0)
+    base = groups()
+    monkeypatch.setattr(windows, "GROUP_COLUMN_BYTES", 4 * 1024**2)
+    more = groups()
+    assert 1 < base < more <= columns
+
+
+def test_stage_chunk_bytes_by_mode() -> None:
+    limit = 2 * 1024**3
+    assert windows._stage_chunk_bytes(limit, "tuned") == limit // windows.STAGE_DIVISOR
+    expected = int(limit * DEFAULT_SAFETY - DEFAULT_BASE) // windows.DEFAULT_STAGE_DIVISOR
+    assert windows._stage_chunk_bytes(limit, "default") == max(windows.MIN_STAGE_CHUNK, expected)
+    assert windows._stage_chunk_bytes(MIN_MEMORY, "default") == windows.MIN_STAGE_CHUNK
+    df = pl.DataFrame({"id": range(2_000), "v": range(2_000)})
+    src = open_source(df)
+    plan = plan_windows(src, src, ["id"], memory_limit=limit, allocator="default")
+    assert plan.stage_chunk_bytes == windows._stage_chunk_bytes(limit, "default")
+
+
+def test_fits_inline_false_when_row_group_exceeds_budget(tmp_path: Path) -> None:
+    n, rg = 20_000, 5_000
+    df = pl.DataFrame({"id": range(n), **{f"s{j}": [f"{i:06d}" + "x" * 500 for i in range(n)] for j in range(4)}})
+    df.write_parquet(tmp_path / "x.parquet", row_group_size=rg)
+    src = open_source(tmp_path)
+    default = plan_windows(src, src, ["id"], memory_limit="600MiB", allocator="default")
+    tuned = plan_windows(src, src, ["id"], memory_limit="600MiB", allocator="tuned")
+    assert not default.fits_inline
+    assert any("processo isolado" in note for note in default.notes)
+    assert tuned.fits_inline  # no modo tuned o plano é o de sempre
+    assert not any("processo isolado" in note for note in tuned.notes)
+    # com folga, o row group cabe inline também no modo default
+    roomy = plan_windows(src, src, ["id"], memory_limit="64GiB", allocator="default")
+    assert roomy.fits_inline
 
 
 @pytest.mark.parametrize("shuffle", [False, True])

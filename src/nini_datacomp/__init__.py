@@ -12,17 +12,13 @@ from __future__ import annotations
 
 from importlib import metadata
 
-# antes de qualquer import do Polars: o alocador dele lê a configuração uma vez só, quando carrega
-from .core.allocator import configure as _configure_allocator
-
-ALLOCATOR_STATUS = _configure_allocator()
-
-from . import expr  # noqa: E402
-from .api import compare  # noqa: E402
-from .core.memory import pool_limit, pool_stats, release_memory  # noqa: E402
-from .errors import AllocatorWarning, NativeLibraryError, PerformanceWarning, UnsupportedTypeError  # noqa: E402
-from .options import CompareOptions  # noqa: E402
-from .readers import (  # noqa: E402
+from . import expr
+from .api import compare
+from .core.allocator import mode as _allocator_mode
+from .core.memory import pool_limit, pool_stats, release_memory
+from .errors import AllocatorWarning, NativeLibraryError, PerformanceWarning, UnsupportedTypeError
+from .options import CompareOptions
+from .readers import (
     ReadOptions,
     read_sas,
     read_spss,
@@ -31,7 +27,7 @@ from .readers import (  # noqa: E402
     scan_spss,
     scan_stata,
 )
-from .results import (  # noqa: E402
+from .results import (
     ColumnResult,
     ColumnSummary,
     ComparisonResult,
@@ -39,6 +35,9 @@ from .results import (  # noqa: E402
     RowSummary,
     TypeMismatch,
 )
+
+# o modo do alocador do Polars neste processo ("default" ou "tuned"); o import não mexe no ambiente (core/allocator.py)
+ALLOCATOR_STATUS = _allocator_mode()
 
 try:
     __version__ = metadata.version("nini-datacomp")

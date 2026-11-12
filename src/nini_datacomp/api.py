@@ -14,13 +14,15 @@ from typing import Any
 
 import polars as pl
 
+from .core.allocator import mode
 from .core.comparators import Comparator, PolarsComparator, as_comparator
 from .errors import PerformanceWarning
 from .io import Source, SourceLike, open_source
+from .isolation import NeedsIsolation, WorkerUnavailable, inline_reason, run_in_worker, use_process, with_note
 from .options import CompareOptions
 from .pipeline import RowCounts, _run, _tol_of, align_columns, sample_key_names
 from .results import ColumnResult, ColumnSummary, ComparisonResult, ExecutionInfo, RowSummary, TypeMismatch
-from .windows import parse_memory_limit
+from .windows import NO_FIT_NOTE, parse_memory_limit
 
 __all__ = ["compare"]
 
@@ -60,6 +62,43 @@ def compare(
     keys = _keys(on, lower=lower)
     abs_tol, rel_tol = _names_of(opts.abs_tol, lower), _names_of(opts.rel_tol, lower)
 
+    allocator = mode()
+    reason = inline_reason(left, right, opts)
+    note: str | None = None
+    if opts.isolation == "process":
+        if use_process("process", allocator, True, reason):
+            try:
+                return run_in_worker(left, right, on, opts, t0=t0)
+            except WorkerUnavailable as exc:
+                note = f"{exc}: executado no próprio processo"
+        else:
+            note = f"executado no próprio processo ({reason})"
+    # "auto": o plano pode pedir o worker (NeedsIsolation) só no modo padrão do alocador e se a fonte permite
+    isolate = opts.isolation == "auto" and allocator == "default" and reason is None
+    try:
+        result = _open_and_compare(left, right, keys, opts, abs_tol=abs_tol, rel_tol=rel_tol, t0=t0, isolate=isolate)
+    except NeedsIsolation:
+        try:
+            return run_in_worker(left, right, on, opts, t0=t0)
+        except WorkerUnavailable as exc:
+            note = f"{exc}: executado no próprio processo"
+        result = _open_and_compare(left, right, keys, opts, abs_tol=abs_tol, rel_tol=rel_tol, t0=t0, isolate=False)
+    if note is None and reason is not None and opts.isolation == "auto" and NO_FIT_NOTE in result.execution.notes:
+        note = f"executado no próprio processo ({reason})"
+    return result if note is None else with_note(result, note)
+
+
+def _open_and_compare(
+    left: SourceLike,
+    right: SourceLike,
+    keys: list[str],
+    opts: CompareOptions,
+    *,
+    abs_tol: float | dict[str, float],
+    rel_tol: float | dict[str, float],
+    t0: float,
+    isolate: bool,
+) -> ComparisonResult:
     stage_bytes = min(_STAGE_MAX, max(_STAGE_MIN, parse_memory_limit(opts.memory_limit) // _STAGE_SHARE))
     read_left, read_right = opts.read_options
     ls = open_source(left, read_left, stage_bytes=stage_bytes)
@@ -69,7 +108,7 @@ def compare(
         ls.cleanup()
         raise
     try:
-        return _compare(ls, rs, keys, opts, abs_tol=abs_tol, rel_tol=rel_tol, t0=t0)
+        return _compare(ls, rs, keys, opts, abs_tol=abs_tol, rel_tol=rel_tol, t0=t0, isolate=isolate)
     finally:
         ls.cleanup()
         rs.cleanup()
@@ -84,6 +123,7 @@ def _compare(
     abs_tol: float | dict[str, float],
     rel_tol: float | dict[str, float],
     t0: float,
+    isolate: bool = False,
 ) -> ComparisonResult:
     lower = not opts.case_sensitive_columns
     errors: list[str] = []
@@ -121,7 +161,7 @@ def _compare(
         threads=opts.threads, abs_tol=abs_tol, rel_tol=rel_tol, ignore_case=opts.ignore_case,
         ignore_spaces=opts.ignore_whitespace, details=opts.details, samples=opts.samples, sources=(ls, rs),
         unordered_lists=unordered, only_common_keys=opts.only_common_keys, comparators=comparators,
-        read_options=opts.read_options,
+        read_options=opts.read_options, isolate=isolate,
     )  # fmt: skip
     if res.dup_left:
         errors.append(f"Duplicate join keys in the left table: {res.dup_left:,} surplus rows")

@@ -25,11 +25,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-# o alocador do Polars como o nini_datacomp o configura no import (core/allocator.py); aqui o Polars é importado antes,
-# então a variável vai direto no ambiente, que os subprocessos herdam
-os.environ.setdefault("MIMALLOC_PURGE_DELAY", "10")
-os.environ.setdefault("MIMALLOC_RESET_DELAY", "10")  # as duas, como o pacote (core/allocator.SETTINGS)
-
 import polars as pl
 import psutil
 
@@ -70,10 +65,22 @@ def worker(spec: dict[str, Any]) -> None:
     print("RESULT " + json.dumps(out))
 
 
+def child_env(allocator: str) -> dict[str, str]:
+    """O ambiente da execução: ``default`` = o mimalloc do Polars como vem; ``tuned`` = devolvendo a memória em 10 ms
+    (``core.allocator.SETTINGS``). O processo que roda a ferramenta não mexe no próprio ambiente."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("MIMALLOC_")}
+    if allocator == "tuned":
+        env.update(MIMALLOC_PURGE_DELAY="10", MIMALLOC_RESET_DELAY="10")
+    return env
+
+
 def measure_once(spec: dict[str, Any]) -> dict[str, Any]:
     with tempfile.TemporaryFile("w+b") as out_f, tempfile.TemporaryFile("w+b") as err_f:
         proc = subprocess.Popen(
-            [sys.executable, str(Path(__file__).resolve()), "--worker", json.dumps(spec)], stdout=out_f, stderr=err_f
+            [sys.executable, str(Path(__file__).resolve()), "--worker", json.dumps(spec)],
+            stdout=out_f,
+            stderr=err_f,
+            env=child_env(spec.get("allocator", "default")),
         )
         ps = psutil.Process(proc.pid)
         peak = 0
@@ -133,16 +140,16 @@ def _cell(values: list[float], digits: int) -> str:
     return f"{s.mean:.{digits}f} ± {s.half_width:.{digits}f}" if s.n > 1 else f"{s.mean:.{digits}f}"
 
 
-def report(results: dict[str, list[dict[str, Any]]], memory_limit: str) -> None:
+def report(results: dict[str, list[dict[str, Any]]], memory_limit: str, allocator: str = "default") -> None:
     DOCS.mkdir(parents=True, exist_ok=True)
     (DOCS / "fase1.json").write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
     lines = [
         "# Fase 1c: memória e tempo do caminho completo (contagem de linhas)",
         "",
         f"`memory_limit = {memory_limit}`. Média ± meia largura do IC de 95%, cada execução num processo novo.",
-        f"Alocador do Polars: `MIMALLOC_PURGE_DELAY={os.environ.get('MIMALLOC_PURGE_DELAY', '-')}`, "
-        f"`MIMALLOC_RESET_DELAY={os.environ.get('MIMALLOC_RESET_DELAY', '-')}` (o que o nini_datacomp configura no "
-        "import; o datacompolars foi medido sem).",
+        f"Alocador do Polars: `{allocator}` ("
+        + ("`MIMALLOC_PURGE_DELAY=10`, `MIMALLOC_RESET_DELAY=10`" if allocator == "tuned" else "o mimalloc como vem")
+        + "; o datacompolars foi medido sem).",
         "O nini-datacomp lê todas as colunas de cada janela, mas só conta as linhas (os valores ainda não são",
         "comparados): o tempo do datacompolars (caminho hash, que compara tudo) é só referência. O que esta fase",
         "promete é a memória não crescer com as linhas. `t` = chave em texto.",
@@ -171,12 +178,19 @@ def main() -> None:
     ap.add_argument("--cases", nargs="+", default=list(CASES))
     ap.add_argument("--runs", type=int, default=5)
     ap.add_argument("--memory-limit", default="1GB")
+    ap.add_argument(
+        "--allocator", choices=("default", "tuned"), default="default",
+        help="o alocador do Polars nas execuções: o mimalloc como vem, ou com MIMALLOC_PURGE_DELAY=10",
+    )  # fmt: skip
     args = ap.parse_args()
     results: dict[str, list[dict[str, Any]]] = {}
     for case in args.cases:
         root = dataset(case)
         exp = load_expected(root)
-        spec = {"left": str(root / "left"), "right": str(root / "right"), "memory_limit": args.memory_limit}
+        spec = {
+            "left": str(root / "left"), "right": str(root / "right"), "memory_limit": args.memory_limit,
+            "allocator": args.allocator,
+        }  # fmt: skip
         measure_once(spec)  # aquecimento (cache de disco), descartado
         results[case] = []
         for i in range(args.runs):
@@ -188,7 +202,7 @@ def main() -> None:
                 f"{r['windows']} janelas  {'ok' if r['ok'] else 'ERRADO'}",
                 flush=True,
             )
-    report(results, args.memory_limit)
+    report(results, args.memory_limit, args.allocator)
 
 
 if __name__ == "__main__":

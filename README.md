@@ -36,7 +36,7 @@ Python 3.10 ou mais novo e Polars 1.30 ou mais novo.
 ## Uso
 
 ```python
-import nini_datacomp as dc  # importe antes do Polars (veja Memória)
+import nini_datacomp as dc
 
 result = dc.compare(
     "sas/tops_adm.parquet",  # arquivo, pasta, glob, pl.DataFrame ou pl.LazyFrame
@@ -163,6 +163,7 @@ SAMPLE DIFFERING ROWS
 | `memory_limit` | `"auto"` | orçamento de memória: bytes ou texto (`"512MB"`, `"2GB"`, `"1.5GiB"`); o pico fica dentro dele, também com o staging por janela |
 | `window_rows` | `None` | avançado: linhas por janela, no lugar do cálculo pelo `memory_limit` |
 | `threads` | `None` | threads dos kernels C++ (padrão: todos os núcleos) |
+| `isolation` | `"auto"` | onde rodar: `"inline"` (neste processo), `"process"` (à parte, com o alocador do Polars ajustado) ou `"auto"` (à parte só se um row group não cabe no `memory_limit` com o alocador padrão; veja [Memória](#memória)) |
 | `verify_hash` | `False` | confere as colunas exatas célula a célula em todos os pares, além do hash |
 | `unordered_lists` | `()` | colunas List comparadas sem a ordem dos elementos (`[1, 2]` = `[2, 1]`) |
 | `comparators` | `{}` | comparador próprio por coluna (veja [Comparadores próprios](#comparadores-próprios)) |
@@ -234,11 +235,19 @@ Os detalhes, com o caminho coluna a coluna (com tolerância), estão em
 
 ## Memória
 
-Importe o `nini_datacomp` antes do Polars. No import, ele configura o alocador do Polars (`MIMALLOC_PURGE_DELAY=10`
-e `MIMALLOC_RESET_DELAY=10`) para devolver em 10 ms a memória que libera: sem isso, numa comparação grande no Windows
-o pico chega a ~1,9x; devolvendo na hora, cada janela pede de novo ao sistema a memória da anterior (até ~30% mais
-lento). Se o Polars já tiver sido importado, não dá mais para configurar e o pacote avisa com `AllocatorWarning`; dá
-para definir as variáveis antes de iniciar o Python, ou silenciar com `NINI_DATACOMP_ALLOCATOR=0`.
+A ordem de import do Polars e do `nini_datacomp` é irrelevante, e o import não mexe no ambiente nem avisa nada. O
+alocador do Polars no Windows (mimalloc) guarda por 1 s a memória que libera, e só dá para mudar isso antes de o Polars
+carregar. Por isso o `memory_limit` é respeitado de duas formas:
+
+- Com o alocador como vem (`nini_datacomp.ALLOCATOR_STATUS == "default"`), as janelas são menores, para caber com o que
+  o alocador guarda. É o caso comum, e é mais rápido que devolver a memória na hora.
+- Quando nem um row group cabe assim (tabelas muito largas, ex. 300 colunas), a comparação roda num **processo à
+  parte**, iniciado com `MIMALLOC_PURGE_DELAY=10` e `MIMALLOC_RESET_DELAY=10` (custa ~0,5-1 s de `spawn`, em
+  `result.execution.timings`, e fica registrado em `execution.notes`). A opção `isolation` escolhe: `"auto"` (padrão),
+  `"inline"` (sempre neste processo) ou `"process"` (sempre à parte). Fontes `DataFrame`/`LazyFrame`, comparadores que
+  não serializam, programas congelados e o próprio worker rodam sempre neste processo.
+
+Se o seu processo já foi iniciado com `MIMALLOC_PURGE_DELAY` até 50 (ms), o modo é `"tuned"` e tudo roda nele.
 
 ## Chave fora de ordem e disco temporário
 

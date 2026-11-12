@@ -19,7 +19,7 @@ from cases import CASES
 from make_data import Spec, generate, load_expected
 from nini_datacomp import pipeline, windows
 from nini_datacomp.errors import UnsupportedTypeError
-from nini_datacomp.io import open_source
+from nini_datacomp.io import open_source, partition_source
 from nini_datacomp.pipeline import WindowReader, compare_rows, count_rows, prepare_keys
 from nini_datacomp.readers import ReadOptions, stage_partitioned
 from nini_datacomp.windows import plan_windows
@@ -353,6 +353,22 @@ def test_partitioned_staging_counts(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert got.mismatched == len([i for i in range(100, 4000) if i % 7 == 0])
 
 
+def test_repartition_uses_plan_stage_chunk(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(pipeline, "PARTITION_THRESHOLD", 3.0)
+    seen: list[int] = []
+
+    def spy(*args: Any, **kwargs: Any) -> Any:
+        seen.append(kwargs["chunk_bytes"])
+        return partition_source(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline, "partition_source", spy)
+    lp, rp = _write_pair(tmp_path, shuffled=True)
+    compare_rows(lp, rp, ["id"], window_rows=1000, memory_limit="1GiB")
+    plan = plan_windows(open_source(lp), open_source(rp), ["id"], window_rows=1000, memory_limit="1GiB")
+    assert seen
+    assert set(seen) == {plan.stage_chunk_bytes}
+
+
 def test_partitioned_staging_skipped_below_threshold(tmp_path: Path) -> None:
     """Amplificação baixa (~4, abaixo do limiar): regravar a fonte custa mais que ler a mais; não entra staging."""
     lp, rp = _write_pair(tmp_path, shuffled=True)
@@ -405,6 +421,48 @@ def test_stage_partitioned_merge_keeps_rows_and_order_free(tmp_path: Path) -> No
     finally:
         tiny.cleanup()
         default.cleanup()
+
+
+@pytest.mark.parametrize("layout", ["window", "pieces", "sorted"])
+@pytest.mark.parametrize("chunk_bytes", [1, 64 * 1024**2])
+def test_stage_layouts_same_rows_per_window(tmp_path: Path, layout: str, chunk_bytes: int) -> None:
+    """Qualquer layout do staging entrega, por janela, as mesmas linhas que a leitura da fonte original; a pasta
+    temporária some."""
+    lake = _write_text_lake(tmp_path / "lake", shuffled=True, text=False)
+    src = open_source(lake)
+    plan = plan_windows(src, src, ["id"], window_rows=500)
+    assert len(plan.windows) > 4
+    staged_src, groups = partition_source(
+        src,
+        plan.windows,
+        ["id"],
+        ReadOptions(temp_dir=tmp_path),
+        chunk_bytes=chunk_bytes,
+        layout=layout,  # type: ignore[arg-type]
+    )
+    folder = staged_src.staged.path if staged_src.staged is not None else None
+    try:
+        assert len(groups) == len(plan.windows)
+        if layout == "window":
+            assert all(len(g) <= 1 for g in groups)
+        staged_plan = dataclasses.replace(plan, files=(groups, groups))
+        want = [(lf.sort("id"), rf.sort("id")) for _, lf, rf in WindowReader(src, src, plan, ["id"], [pl.Int64()])]
+        reader = WindowReader(staged_src, staged_src, staged_plan, ["id"], [pl.Int64()])
+        got = [(lf.sort("id"), rf.sort("id")) for _, lf, rf in reader]
+        assert len(got) == len(want)
+        for (la, ra), (lb, rb) in zip(got, want, strict=True):
+            assert la.columns == ["id", "v"]
+            assert la.equals(lb)
+            assert ra.equals(rb)
+        assert sum(lf.height for lf, _ in got) == 4000
+        reader_cols = WindowReader(
+            staged_src, staged_src, staged_plan, ["id"], [pl.Int64()], columns_left=["v"], columns_right=["v"]
+        )
+        assert all(lf.columns == ["id", "v"] for _, lf, _ in reader_cols)
+    finally:
+        staged_src.cleanup()
+    assert folder is not None
+    assert not folder.exists()
 
 
 def test_stage_partitioned_empty_window(tmp_path: Path) -> None:

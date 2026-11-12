@@ -38,8 +38,10 @@ if TYPE_CHECKING:
 __all__ = [
     "DEFAULT_STAGE_BYTES",
     "SUFFIXES",
+    "WINDOW_COLUMN",
     "FileFormat",
     "ReadOptions",
+    "StageLayout",
     "Staged",
     "format_of",
     "read_sas",
@@ -172,6 +174,13 @@ def format_of(path: Path, options: ReadOptions) -> FileFormat:
 
 
 # ----------------------------------------------------------------------------- conversão para Parquet temporário
+# Como `stage_partitioned` grava as janelas: "window" = um arquivo por janela (os pedaços de cada janela juntados numa
+# segunda passada); "pieces" = os pedaços como saem da primeira passada, sem juntar (um arquivo por fatia e janela);
+# "sorted" = um arquivo por fatia, com as linhas ordenadas pela janela (coluna ``__w``)
+StageLayout = Literal["window", "pieces", "sorted"]
+WINDOW_COLUMN = "__w"
+
+
 @dataclass
 class Staged:
     """A pasta temporária com o Parquet convertido de uma fonte; `cleanup` apaga (também quando o objeto some)."""
@@ -180,6 +189,7 @@ class Staged:
     _dir: tempfile.TemporaryDirectory[str] | None = None
     # só em `stage_partitioned`: os índices (em ``files``) dos arquivos de cada janela, na ordem das janelas
     groups: list[tuple[int, ...]] = field(default_factory=list)
+    layout: StageLayout = "window"
 
     @property
     def path(self) -> Path:
@@ -214,6 +224,7 @@ def stage_partitioned(
     options: ReadOptions,
     *,
     chunk_bytes: int = DEFAULT_STAGE_BYTES,
+    layout: StageLayout = "window",
 ) -> Staged:
     """Regrava ``source`` (Parquet, com as conversões dela aplicadas) em uma pasta temporária com os arquivos de cada
     janela (`Staged.groups` diz quais arquivos são de qual janela). Uma janela sem linhas não tem arquivo. Assim ler a
@@ -227,7 +238,7 @@ def stage_partitioned(
     index = _window_index([w.predicate(keys, dtypes) for w in windows])
     rows = _row_group_rows(schema, chunk_bytes)
     tmp = tempfile.TemporaryDirectory(prefix="nini-datacomp-", dir=options.temp_dir, ignore_cleanup_errors=True)
-    staged = Staged(_dir=tmp)
+    staged = Staged(_dir=tmp, layout=layout)
     try:
         found: list[list[Path]] = [[] for _ in windows]
         for k, f in enumerate(source.files):
@@ -237,7 +248,18 @@ def stage_partitioned(
             total = lf.select(pl.len()).collect().item()
             for n, offset in enumerate(range(0, total, rows)):
                 df = lf.slice(offset, rows).with_columns(index).collect()
-                parts = df.partition_by("__w", as_dict=True, include_key=False)
+                if layout == "sorted":
+                    # uma fatia, um arquivo, com as linhas ordenadas pela janela: os row groups (~1/4 de uma janela) têm
+                    # as estatísticas de ``__w`` apertadas, e o Polars pula os que não são da janela lida
+                    df = df.sort(WINDOW_COLUMN, maintain_order=True)
+                    out = folder / f"{n:06d}.parquet"
+                    df.write_parquet(
+                        out, compression="lz4", statistics=True, row_group_size=max(1_024, rows // len(windows) // 4)
+                    )
+                    del df
+                    staged.files.append(out)
+                    continue
+                parts = df.partition_by(WINDOW_COLUMN, as_dict=True, include_key=False)
                 del df
                 outs = {cast(int, i): folder / f"{cast(int, i):05d}-{n:06d}.parquet" for (i,) in parts}
                 with ThreadPoolExecutor() as pool:  # a escrita solta o GIL
@@ -249,9 +271,15 @@ def stage_partitioned(
                         job.result()
                 for i, out in outs.items():
                     found[i].append(out)
+        if layout == "sorted":
+            staged.groups = [tuple(range(len(staged.files)))] * len(windows)  # toda janela abre todas as fatias
+            return staged
         for i, files in enumerate(found):
             first = len(staged.files)
-            staged.files += [_merge_window(files, staged.path / f"w{i:05d}.parquet")] if files else []
+            if layout == "window":
+                staged.files += [_merge_window(files, staged.path / f"w{i:05d}.parquet")] if files else []
+            else:  # "pieces": os arquivos como saíram, só passam para fora das subpastas
+                staged.files += [f.replace(staged.path / f"w{i:05d}-{j:05d}.parquet") for j, f in enumerate(files)]
             staged.groups.append(tuple(range(first, len(staged.files))))
         for folder in staged.path.iterdir():
             if folder.is_dir():

@@ -64,6 +64,13 @@ class CompareOptions(BaseModel):
         default=None, ge=1, description="Avançado: linhas por janela, no lugar do cálculo pelo memory_limit."
     )
     threads: int | None = Field(default=None, ge=1, description="Threads dos kernels C++ (None: todos os núcleos).")
+    isolation: Literal["auto", "inline", "process"] = Field(
+        default="auto",
+        description=(
+            "Onde rodar: 'inline' (neste processo), 'process' (um processo à parte, com o alocador do Polars ajustado) "
+            "ou 'auto' (à parte só se, com o alocador padrão, nem um row group cabe no memory_limit)."
+        ),
+    )
     verify_hash: bool = Field(
         default=False,
         description="Confere as colunas exatas célula a célula em todos os pares (o hash de linha nunca decide só).",

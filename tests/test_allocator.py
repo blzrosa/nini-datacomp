@@ -1,3 +1,5 @@
+"""``core.allocator.mode`` e o import sem efeito colateral (a ordem de import é irrelevante)."""
+
 from __future__ import annotations
 
 import os
@@ -6,49 +8,64 @@ import sys
 
 import pytest
 
-from nini_datacomp import AllocatorWarning
-from nini_datacomp.core.allocator import ALLOCATOR_ENV, PURGE_DELAY_MS, SETTINGS, configure
+from nini_datacomp.core.allocator import mode
 
 
-def test_sets_when_polars_not_loaded() -> None:
-    env: dict[str, str] = {}
-    assert configure(env, modules={"numpy"}, platform="win32") == "set"
-    assert env == SETTINGS
-
-
-def test_keeps_user_value() -> None:
-    env = {"MIMALLOC_PURGE_DELAY": "10"}
-    assert configure(env, modules=set(), platform="win32") == "user"
-    assert env == {"MIMALLOC_PURGE_DELAY": "10"}
-
-
-def test_disabled() -> None:
-    env = {ALLOCATOR_ENV: "0"}
-    assert configure(env, modules={"polars"}, platform="win32") == "disabled"
-    assert env == {ALLOCATOR_ENV: "0"}
-
-
-def test_late_warns_on_windows() -> None:
-    env: dict[str, str] = {}
-    with pytest.warns(AllocatorWarning, match="MIMALLOC_PURGE_DELAY=10"):
-        assert configure(env, modules={"polars"}, platform="win32") == "late"
-    assert env == {}
-
-
-@pytest.mark.filterwarnings("error")
-def test_late_is_silent_elsewhere() -> None:
-    assert configure({}, modules={"polars"}, platform="linux") == "late"
+@pytest.mark.parametrize(
+    ("env", "expected"),
+    [
+        ({}, "default"),
+        ({"MIMALLOC_PURGE_DELAY": "10"}, "tuned"),
+        ({"MIMALLOC_PURGE_DELAY": "0"}, "tuned"),
+        ({"MIMALLOC_PURGE_DELAY": "50"}, "tuned"),
+        ({"MIMALLOC_PURGE_DELAY": "51"}, "default"),
+        ({"MIMALLOC_PURGE_DELAY": "1000"}, "default"),
+        ({"MIMALLOC_PURGE_DELAY": "-1"}, "default"),
+        ({"MIMALLOC_PURGE_DELAY": "abc"}, "default"),
+        ({"MIMALLOC_RESET_DELAY": "10"}, "default"),
+        ({"NINI_DATACOMP_ALLOCATOR": "0"}, "default"),  # a variável antiga é ignorada
+    ],
+)
+def test_mode_default_and_tuned(env: dict[str, str], expected: str) -> None:
+    assert mode(env) == expected
 
 
 def _child(code: str) -> subprocess.CompletedProcess[str]:
-    env = {k: v for k, v in os.environ.items() if k not in SETTINGS and k != ALLOCATOR_ENV}
+    env = {k: v for k, v in os.environ.items() if not k.startswith("MIMALLOC_") and k != "NINI_DATACOMP_ALLOCATOR"}
     return subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env, check=True)
 
 
-def test_import_order_in_a_fresh_process() -> None:
-    code = "import os, nini_datacomp, polars; print(nini_datacomp.ALLOCATOR_STATUS, os.environ['MIMALLOC_PURGE_DELAY'])"
-    first = _child(code)
-    assert first.stdout.split() == ["set", PURGE_DELAY_MS]
-    late = _child("import polars, nini_datacomp; print(nini_datacomp.ALLOCATOR_STATUS)")
-    assert late.stdout.split() == ["late"]
-    assert ("AllocatorWarning" in late.stderr) == (sys.platform == "win32")
+@pytest.mark.parametrize("order", ["import nini_datacomp, polars", "import polars, nini_datacomp"])
+def test_import_has_no_side_effects(order: str) -> None:
+    code = (
+        f"{order}\nimport os, nini_datacomp\n"
+        "print(nini_datacomp.ALLOCATOR_STATUS, sorted(k for k in os.environ if k.startswith('MIMALLOC_')))"
+    )
+    out = _child(code)
+    assert out.stderr == ""
+    assert out.stdout.split(" ", 1) == ["default", "[]\n"]
+
+
+def test_allocator_env_is_ignored() -> None:
+    env = {k: v for k, v in os.environ.items() if not k.startswith("MIMALLOC_")} | {"NINI_DATACOMP_ALLOCATOR": "0"}
+    out = subprocess.run(
+        [sys.executable, "-c", "import polars, nini_datacomp, os; print(nini_datacomp.ALLOCATOR_STATUS)"],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=True,
+    )
+    assert out.stdout.split() == ["default"]
+    assert out.stderr == ""
+
+
+def test_tuned_status_from_environment() -> None:
+    env = {k: v for k, v in os.environ.items() if not k.startswith("MIMALLOC_")} | {"MIMALLOC_PURGE_DELAY": "10"}
+    out = subprocess.run(
+        [sys.executable, "-c", "import nini_datacomp; print(nini_datacomp.ALLOCATOR_STATUS)"],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=True,
+    )
+    assert out.stdout.split() == ["tuned"]

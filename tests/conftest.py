@@ -1,5 +1,4 @@
-"""Importa o nini_datacomp antes de tudo (antes do Polars), como o pacote recomenda: o alocador do Polars sai
-configurado (`core/allocator.py`) e o aviso de import fora de ordem não aparece nos testes."""
+"""Configuração comum dos testes (a ordem de import do Polars é irrelevante: `core/allocator.py`)."""
 
 import json
 import os
