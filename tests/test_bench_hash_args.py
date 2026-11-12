@@ -54,6 +54,25 @@ def test_window_rows_and_out_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     assert list(json.loads(out.read_text(encoding="utf-8"))) == ["500x3"]
 
 
+def test_combine_peak_inline_is_max_parent() -> None:
+    assert bench_hash.combine_peak([(100, 0), (400, 0), (250, 0)], parent_base=300) == 400
+
+
+def test_combine_peak_subtracts_parent_base() -> None:
+    samples = [(300, 0), (300, 500), (300, 900), (300, 100)]
+    assert bench_hash.combine_peak(samples, parent_base=300) == 900
+
+
+def test_combine_peak_counts_parent_growth() -> None:
+    assert bench_hash.combine_peak([(300, 600), (350, 900)], parent_base=300) == 950
+    # o crescimento só conta na mesma amostra do filho
+    assert bench_hash.combine_peak([(300, 900), (350, 600)], parent_base=300) == 900
+
+
+def test_combine_peak_parent_below_base_not_negative() -> None:
+    assert bench_hash.combine_peak([(200, 900), (250, 800)], parent_base=300) == 900
+
+
 def test_unordered_wide_case() -> None:
     spec, unordered = bench_hash.parse_case("22000000x84w")
     assert not unordered
