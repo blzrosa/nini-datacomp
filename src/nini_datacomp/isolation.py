@@ -5,9 +5,10 @@ ambiente no import (``core/allocator.py``). Com o alocador padrão, uma tabela c
 ``memory_limit`` (ex.: 300 colunas) só cabe com o alocador ajustado: então a comparação roda num processo novo, iniciado
 com ``MIMALLOC_PURGE_DELAY=10``. Um processo por comparação (sem worker persistente): custa ~0,5-1 s de ``spawn``.
 
-``isolation="auto"``: no processo à parte só se o alocador é o padrão e ``Plan.fits_inline`` é falso. Sempre no próprio
-processo (``inline_reason``): fonte que não é arquivo, comparador que não serializa, programa congelado, e o próprio
-worker. A mesma exceção volta ao chamador; os avisos do worker são reemitidos aqui.
+``isolation="auto"``: no processo à parte só se o alocador é o padrão e ``Plan.fits_inline`` é falso, ou se o plano vai
+reparticionar uma fonte fora de ordem (o staging com o alocador padrão deixa o mimalloc guardando memória). Sempre no
+próprio processo (``inline_reason``): fonte que não é arquivo, comparador que não serializa, programa congelado, e o
+próprio worker. A mesma exceção volta ao chamador; os avisos do worker são reemitidos aqui.
 """
 
 from __future__ import annotations
@@ -45,7 +46,8 @@ ISOLATED_NOTE = "executado em processo isolado (alocador do Polars ajustado)"
 
 
 class NeedsIsolation(Exception):  # noqa: N818 - sinal interno, não um erro
-    """O plano diz que, neste processo, nem um row group cabe no memory_limit (``Plan.fits_inline`` falso)."""
+    """O plano diz que, neste processo, nem um row group cabe no memory_limit (``Plan.fits_inline`` falso), ou que
+    vai reparticionar uma fonte (staging): o worker, com o alocador ajustado, faz as duas coisas."""
 
 
 class WorkerUnavailable(Exception):  # noqa: N818 - o worker não iniciou ou não respondeu: a comparação segue inline

@@ -13,6 +13,7 @@ import pytest
 from pydantic import ValidationError
 
 import nini_datacomp as dc
+from nini_datacomp import pipeline
 from nini_datacomp.isolation import inline_reason, use_process
 
 HERE = Path(__file__).parent
@@ -175,6 +176,46 @@ def test_auto_goes_to_worker_when_row_group_does_not_fit(tmp_path: Path) -> None
     assert any("próprio processo" in note for note in mixed.execution.notes)
     inline = dc.compare(path, path, on="id", memory_limit="600MiB", isolation="inline")
     assert "spawn" not in inline.execution.timings
+
+
+@pytest.mark.skipif(dc.ALLOCATOR_STATUS != "default", reason="o auto só isola com o alocador padrão")
+def test_auto_goes_to_worker_when_staging_is_needed(tmp_path: Path) -> None:
+    n = 20_000
+    df = pl.DataFrame({"id": range(n), "v": [i % 11 for i in range(n)]}).sample(fraction=1.0, shuffle=True, seed=3)
+    path = tmp_path / "shuffled.parquet"
+    df.write_parquet(path, row_group_size=100, statistics=True)  # 200 row groups, ids espalhados em todos
+    kwargs = {"on": "id", "window_rows": 500, "memory_limit": "1GB"}  # 40 janelas: amplificação real > 15
+    auto = dc.compare(path, path, **kwargs)
+    inline = dc.compare(path, path, isolation="inline", **kwargs)
+    assert auto.is_match
+    assert "spawn" in auto.execution.timings
+    assert "spawn" not in inline.execution.timings
+    for result in (auto, inline):
+        assert any("fontes reparticionadas por janela" in note for note in result.execution.notes)
+    assert (auto.rows.common, auto.rows.left_only, auto.rows.right_only) == (
+        inline.rows.common,
+        inline.rows.left_only,
+        inline.rows.right_only,
+    )
+    # com um lado DataFrame o staging segue neste processo
+    mixed = dc.compare(path, df, **kwargs)
+    assert mixed.is_match
+    assert "spawn" not in mixed.execution.timings
+
+
+@pytest.mark.skipif(dc.ALLOCATOR_STATUS != "default", reason="o auto só isola com o alocador padrão")
+def test_auto_skips_host_plan_when_schema_proves_no_fit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    n = 200_000
+    path = tmp_path / "ints.parquet"
+    pl.DataFrame({"id": range(n), **{f"c{j}": range(n) for j in range(9)}}).write_parquet(path, row_group_size=n)
+
+    def boom(*_: object, **__: object) -> None:
+        raise AssertionError("o host não deve planejar")
+
+    monkeypatch.setattr(pipeline, "plan_windows", boom)
+    result = dc.compare(path, path, on="id", memory_limit="600MiB")
+    assert result.is_match
+    assert "spawn" in result.execution.timings
 
 
 def test_result_pickles(pair: tuple[Path, Path]) -> None:

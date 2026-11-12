@@ -4,6 +4,28 @@ Formato: [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/); versões: 
 
 ## [Não lançado]
 
+## [0.5.0] — 2026-11-12
+
+Versão menor (0.4.1 → 0.5.0): muda onde e como a comparação roda quando a fonte está fora de ordem, sem alterar a API.
+
+### Para quem usa
+- Fonte Parquet fora de ordem com amplificação de leitura > 2 (até o limiar de 15 do staging) agora é lida em fatias de
+  poucos row groups por janela, uma por vez. Antes o Polars decodificava de uma vez os row groups que o filtro da chave
+  só descarta depois: 2M x 84 com chave embaralhada e `memory_limit="1GB"` passava de 1,3 GiB; agora fica em ~0,6 GiB
+  (8,6 a 10 s, ~15% mais lento que sem fatias). Aparece em `execution.notes` (`"fonte fora de ordem lida em fatias de
+  N row groups"`). Fonte em ordem e lado `DataFrame` seguem como antes.
+- O staging volta a gravar os arquivos como saem da primeira passada (um por fatia e janela): a junção da 0.4.1 (um
+  arquivo por janela) saiu porque deixou o staging lento. 10M x 50 embaralhado, 1GB: 40 s e 751 MiB (era ~125 s com a
+  junção); 2GB: 27 s e 1772 MiB (era ~60 s).
+- `isolation="auto"` também roda à parte quando há staging (a fonte vai ser reparticionada); com um lado `DataFrame`
+  o staging segue neste processo. Chave de texto é planejada pelo rodapé do Parquet, sem ler a coluna.
+
+### Para quem desenvolve
+- `Source.scan(files, rows=(offset, n))` corta as linhas antes dos passos; `Plan.slice_row_groups` e `Plan.slice_sides`.
+- Sai `readers.StageLayout`, `WINDOW_COLUMN`, `Source.window_column` e `pipeline.STAGE_LAYOUT`; `tools/bench_hash.py`
+  perde `--layout` (`--stage-divisor` e `--no-staging` ficam). Layouts medidos (10M x 50, divisor 10): window 124/60 s,
+  pieces 40/25 s, sorted 42/25 s (estourou o limite com 1GB: 1.412 MiB).
+
 ## [0.4.1] — 2026-11-09
 
 Versão de correção/ajuste (0.4.0 → 0.4.1): muda quando o staging por janela é usado e melhora o que ele grava e informa,

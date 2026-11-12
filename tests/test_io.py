@@ -7,7 +7,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from nini_datacomp.io import open_source, row_groups
+from nini_datacomp.io import key_stats, open_source, row_groups
 
 
 def test_frames() -> None:
@@ -33,6 +33,18 @@ def test_folder_glob_and_file(tmp_path: Path) -> None:
     assert open_source(tmp_path / "a.parquet").lazy.collect().height == 5
 
 
+def test_scan_rows_slices_before_steps(tmp_path: Path) -> None:
+    """`scan(files, rows=(a, n))`: as linhas a..a+n do arquivo (o `slice` vem antes dos passos) que passam no filtro,
+    não as n primeiras já filtradas."""
+    path = tmp_path / "a.parquet"
+    pl.DataFrame({"id": range(100)}).write_parquet(path, row_group_size=10)
+    src = open_source(path).filter(pl.col("id") % 2 == 0)
+    got = src.scan([path], rows=(10, 20)).collect()
+    assert got["id"].to_list() == list(range(10, 30, 2))
+    assert src.scan([path], rows=None).collect()["id"].to_list() == list(range(0, 100, 2))
+    assert src.scan([path]).collect()["id"].to_list() == list(range(0, 100, 2))
+
+
 def test_errors(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         open_source(tmp_path / "nada")
@@ -56,6 +68,38 @@ def test_row_groups_from_footer(tmp_path: Path, n: int, rg: int) -> None:
     assert sum(groups) == n  # o leitor conta todas as linhas
     assert all(g > 0 for g in groups)
     # o tamanho de cada row group é escolha de quem grava (o Polars 1.30 não corta exatamente em 3.333): só o total vale
+
+
+def test_key_stats_text(tmp_path: Path) -> None:
+    n = 3_000
+    values: list[str | None] = [f"k{(i * 7919) % n:05d}" for i in range(n)]
+    values[10] = "açaí-ünico"  # acento: o mínimo/máximo é comparado em bytes UTF-8
+    values[1_500] = None  # um row group com nulo
+    df = pl.DataFrame({"s": values, "i": range(n)}, schema={"s": pl.String, "i": pl.Int64})
+    path = tmp_path / "t.parquet"
+    df.write_parquet(path, row_group_size=1_000, statistics=True)
+    stats = key_stats(path, "s", text=True)
+    sizes = row_groups(path)
+    assert len(stats) == len(sizes) >= 3
+    start = 0
+    for g, size in zip(stats, sizes, strict=True):
+        part = df["s"].slice(start, size)
+        start += size
+        assert g.rows == size
+        assert g.min == part.min()
+        assert g.max == part.max()
+        assert g.nulls == part.null_count()
+    assert any(g.nulls for g in stats)
+    assert any(isinstance(g.min, str) and not g.min.isascii() for g in stats) or any(
+        isinstance(g.max, str) and not g.max.isascii() for g in stats
+    )
+    # coluna inteira com `text=True` e coluna de texto sem `text`: sem mínimo e máximo
+    assert all(g.min is None and g.max is None for g in key_stats(path, "i", text=True))
+    assert all(g.min is None and g.max is None for g in key_stats(path, "s"))
+    # sem estatísticas gravadas
+    bare = tmp_path / "bare.parquet"
+    df.write_parquet(bare, row_group_size=1_000, statistics=False)
+    assert all(g.min is None and g.max is None and g.nulls is None for g in key_stats(bare, "s", text=True))
 
 
 def test_row_groups_wide_file(tmp_path: Path) -> None:

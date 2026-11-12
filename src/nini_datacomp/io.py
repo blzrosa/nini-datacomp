@@ -22,11 +22,9 @@ from ._native import lib, ptr
 from .readers import (
     DEFAULT_STAGE_BYTES,
     SUFFIXES,
-    WINDOW_COLUMN,
     FileFormat,
     ReadOptions,
     Staged,
-    StageLayout,
     format_of,
     stage,
     stage_partitioned,
@@ -63,9 +61,6 @@ class Source:
     # o que se aplica depois de ler (em toda leitura de `scan`): with_columns (conversões de tipo) e renomeações
     steps: tuple[Step, ...] = ()
     staged: Staged | None = None  # a pasta temporária com o Parquet convertido (formatos que não são Parquet)
-    # o Parquet reparticionado "sorted" (`partition_source`): a coluna com o índice da janela de cada linha; a janela
-    # k é lida por ``coluna == k`` (e a coluna sai)
-    window_column: str | None = None
 
     @property
     def is_parquet(self) -> bool:
@@ -90,10 +85,13 @@ class Source:
         frame = self.frame.filter(predicate) if self.frame is not None else None
         return replace(self, lazy=self.lazy.filter(predicate), frame=frame, steps=(*self.steps, Where(predicate)))
 
-    def scan(self, files: Sequence[Path]) -> pl.LazyFrame:
+    def scan(self, files: Sequence[Path], rows: tuple[int, int] | None = None) -> pl.LazyFrame:
         """Só alguns dos arquivos Parquet da fonte, com as mesmas conversões: uma janela que cai em poucos arquivos
-        não faz o Polars abrir o rodapé de todos (com 300 colunas, ~1 ms cada, a cada janela)."""
+        não faz o Polars abrir o rodapé de todos (com 300 colunas, ~1 ms cada, a cada janela). ``rows=(offset,
+        length)``: só essas linhas dos arquivos, cortadas antes dos passos (um filtro depois mudaria quais são)."""
         lf = _scan([str(f) for f in files])
+        if rows is not None:
+            lf = lf.slice(*rows)
         for step in self.steps:
             if isinstance(step, dict):
                 lf = lf.rename(step)
@@ -116,14 +114,11 @@ def partition_source(
     options: ReadOptions,
     *,
     chunk_bytes: int,
-    layout: StageLayout = "window",
 ) -> tuple[Source, list[tuple[int, ...]]]:
-    """``source`` regravada por janela (`readers.stage_partitioned`, no ``layout``): a nova fonte (sem passos: as
-    conversões já estão nos arquivos) e, por janela, os índices dos arquivos dela. `Source.cleanup` apaga a pasta."""
-    staged = stage_partitioned(source, windows, keys, options, chunk_bytes=chunk_bytes, layout=layout)
+    """``source`` regravada por janela (`readers.stage_partitioned`): a nova fonte (sem passos: as conversões já estão
+    nos arquivos) e, por janela, os índices dos arquivos dela. `Source.cleanup` apaga a pasta."""
+    staged = stage_partitioned(source, windows, keys, options, chunk_bytes=chunk_bytes)
     lazy = _scan([str(f) for f in staged.files])
-    if layout == "sorted":
-        return Source(lazy, tuple(staged.files), staged=staged, window_column=WINDOW_COLUMN), staged.groups
     return Source(lazy, tuple(staged.files), staged=staged), staged.groups
 
 
@@ -239,20 +234,49 @@ def row_groups(path: Path) -> list[int]:
 
 @dataclass(frozen=True)
 class KeyStats:
-    """As estatísticas de uma coluna inteira num row group, do rodapé do Parquet (None: o arquivo não gravou)."""
+    """As estatísticas de uma coluna (inteira ou de texto) num row group, do rodapé do Parquet (None: o arquivo não
+    gravou)."""
 
     rows: int
-    min: int | None
-    max: int | None
+    min: int | str | None
+    max: int | str | None
     nulls: int | None
 
 
-def key_stats(path: Path, column: str) -> list[KeyStats]:
-    """Mínimo, máximo e nulos da coluna ``column`` (inteira, do nível de cima) em cada row group, do rodapé (kernel
-    ``dc_parquet_key_stats``): o planejamento das janelas usa isso no lugar de ler a chave."""
+def _text_key_stats(path: Path, footer: np.ndarray, name: np.ndarray, name_len: int) -> list[KeyStats]:
+    cap = 4096
+    while True:
+        out = np.zeros((cap, 7), np.int64)
+        count = int(lib().dc_parquet_text_stats(ptr(footer), footer.size, ptr(name), name_len, ptr(out), cap))
+        if count < 0:
+            raise ValueError(f"{path}: rodapé Parquet ilegível")
+        if count <= cap:
+            break
+        cap = count
+    stats: list[KeyStats] = []
+    for rows, lo_at, lo_len, hi_at, hi_len, nulls, flags in out[:count].tolist():
+        lo: str | None = None
+        hi: str | None = None
+        if flags & 1:
+            try:  # um valor que não é UTF-8 válido derruba a marca de mínimo e máximo
+                lo = footer[lo_at : lo_at + lo_len].tobytes().decode("utf-8")
+                hi = footer[hi_at : hi_at + hi_len].tobytes().decode("utf-8")
+            except UnicodeDecodeError:
+                lo = hi = None
+        stats.append(KeyStats(int(rows), lo, hi, int(nulls) if flags & 2 else None))
+    return stats
+
+
+def key_stats(path: Path, column: str, *, text: bool = False) -> list[KeyStats]:
+    """Mínimo, máximo e nulos da coluna ``column`` (do nível de cima) em cada row group, do rodapé (kernel
+    ``dc_parquet_key_stats``; com ``text``, ``dc_parquet_text_stats``, para coluna de texto): o planejamento das
+    janelas usa isso no lugar de ler a chave. Sem ``text`` só uma coluna inteira tem mínimo e máximo; com ``text``, só
+    uma de texto."""
     footer = _footer(path)
     name = np.frombuffer(column.encode("utf-8") or b"\0", np.uint8).copy()
     name_len = len(column.encode("utf-8"))
+    if text:
+        return _text_key_stats(path, footer, name, name_len)
     cap = 4096
     while True:
         out = np.zeros((cap, 5), np.int64)

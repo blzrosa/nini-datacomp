@@ -161,6 +161,96 @@ def test_fits_inline_false_when_row_group_exceeds_budget(tmp_path: Path) -> None
     assert roomy.fits_inline
 
 
+def _int_wide(tmp_path: Path) -> Path:
+    """Só inteiros, um row group (200 mil linhas x 10 colunas) maior que o orçamento default de 600MiB."""
+    n = 200_000
+    df = pl.DataFrame({"id": range(n), **{f"c{j}": range(n) for j in range(9)}})
+    path = tmp_path / "ints.parquet"
+    df.write_parquet(path, row_group_size=n)
+    return path
+
+
+def test_may_fit_inline_false_from_schema(tmp_path: Path) -> None:
+    src = open_source(_int_wide(tmp_path))
+    assert not windows.may_fit_inline(src, src, ["id"], "600MiB", allocator="default")
+    assert not plan_windows(src, src, ["id"], memory_limit="600MiB", allocator="default").fits_inline
+    assert windows.may_fit_inline(src, src, ["id"], "600MiB", allocator="tuned")
+    assert windows.may_fit_inline(src, src, ["id"], "600MiB", window_rows=1000, allocator="default")
+    assert windows.may_fit_inline(src, src, ["id"], "64GiB", allocator="default")
+
+
+def test_may_fit_inline_true_when_only_sample_knows(tmp_path: Path) -> None:
+    n, rg = 20_000, 5_000
+    df = pl.DataFrame({"id": range(n), **{f"s{j}": [f"{i:06d}" + "x" * 500 for i in range(n)] for j in range(4)}})
+    df.write_parquet(tmp_path / "x.parquet", row_group_size=rg)
+    src = open_source(tmp_path)
+    assert not plan_windows(src, src, ["id"], memory_limit="600MiB", allocator="default").fits_inline
+    assert windows.may_fit_inline(src, src, ["id"], "600MiB", allocator="default")
+
+
+def test_may_fit_inline_reads_no_data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    src = open_source(_int_wide(tmp_path))
+
+    def boom(*_: object, **__: object) -> None:
+        raise AssertionError("may_fit_inline não lê dados")
+
+    monkeypatch.setattr(windows, "_collect", boom)
+    assert not windows.may_fit_inline(src, src, ["id"], "600MiB", allocator="default")
+
+
+def _spy_collect(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Quantos LazyFrames cada chamada de ``_collect`` recebeu."""
+    calls: list[int] = []
+    real = windows._collect
+
+    def spy(queries: object) -> list[pl.DataFrame]:
+        calls.append(sum(isinstance(q, pl.LazyFrame) for q in queries))  # type: ignore[attr-defined]
+        return real(queries)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(windows, "_collect", spy)
+    return calls
+
+
+def test_plan_skips_other_side_firsts_when_base_aligns(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    n = 10_000
+    left = pl.DataFrame({"id": range(n), "v": range(n)})
+    # faixas de row groups sobrepostas: o rodapé não dá `firsts`
+    right = pl.DataFrame({"id": [(i % 10) * 1000 + i // 10 for i in range(n)], "v": range(n)})
+    (tmp_path / "l").mkdir()
+    (tmp_path / "r").mkdir()
+    left.write_parquet(tmp_path / "l" / "a.parquet", row_group_size=1_000)
+    right.write_parquet(tmp_path / "r" / "a.parquet", row_group_size=1_000)
+    ls, rs = open_source(tmp_path / "l"), open_source(tmp_path / "r")
+    calls = _spy_collect(monkeypatch)
+    plan = plan_windows(ls, rs, ["id"], window_rows=2_000, allocator="tuned")
+    assert calls
+    assert all(c == 0 for c in calls)
+    assert plan.base == "left"
+    assert plan.aligned_to_row_groups
+    assert_partition(plan, left, ["id"])
+
+
+def test_plan_queries_other_side_firsts_when_base_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    ids = [f"k{i:06d}" for i in range(6_000)]
+    shuffled = ids.copy()
+    random.Random(3).shuffle(shuffled)
+    left = pl.DataFrame({"id": shuffled, "v": range(6_000)})  # fora de ordem e com mais linhas
+    right = pl.DataFrame({"id": ids[:4_000], "v": range(4_000)})
+    (tmp_path / "l").mkdir()
+    (tmp_path / "r").mkdir()
+    # sem estatísticas: o rodapé não dá o `firsts` da chave de texto, e a consulta do direito fica pendente
+    left.write_parquet(tmp_path / "l" / "a.parquet", row_group_size=1_000, statistics=False)
+    right.write_parquet(tmp_path / "r" / "a.parquet", row_group_size=1_000, statistics=False)
+    ls, rs = open_source(tmp_path / "l"), open_source(tmp_path / "r")
+    calls = _spy_collect(monkeypatch)
+    plan = plan_windows(ls, rs, ["id"], window_rows=1_000, allocator="tuned")
+    assert plan.base == "right"
+    assert plan.aligned_to_row_groups
+    assert calls[-1] == 1  # a consulta do direito, numa segunda chamada
+    assert len(calls) >= 2
+    assert_partition(plan, right, ["id"])
+
+
 @pytest.mark.parametrize("shuffle", [False, True])
 def test_int_key_partition(shuffle: bool) -> None:
     ids = list(range(-5_000, 5_000, 3))
@@ -240,6 +330,45 @@ def test_unsorted_parquet_is_not_aligned(tmp_path: Path) -> None:
     assert_partition(plan, df, ["id"])
 
 
+def _slice_pair(tmp_path: Path, *, shuffled: bool, n: int = 4000, rg: int = 100) -> tuple[Path, Path]:
+    df = pl.DataFrame({"id": range(n), "v": [i * 3 for i in range(n)]})
+    if shuffled:
+        df = df.sample(fraction=1.0, shuffle=True, seed=3)
+    lp, rp = tmp_path / "left.parquet", tmp_path / "right.parquet"
+    df.write_parquet(lp, row_group_size=rg, statistics=True)
+    df.write_parquet(rp, row_group_size=rg, statistics=True)
+    return lp, rp
+
+
+def test_plan_slices_out_of_order_sides(tmp_path: Path) -> None:
+    lp, rp = _slice_pair(tmp_path, shuffled=True)
+
+    def expected(plan: Plan) -> int:
+        biggest = max(row_groups(lp))
+        per_group = biggest * sum(plan.bytes_per_row) / plan.column_groups
+        return max(1, int(plan.memory_limit * windows.SLICE_SHARE / per_group))
+
+    seen = set()
+    for limit in ("1GiB", "100KiB"):
+        plan = plan_windows(open_source(lp), open_source(rp), ["id"], limit, window_rows=1000)
+        assert len(plan.windows) >= 4
+        assert plan.slice_sides == (True, True)
+        assert plan.slice_row_groups == expected(plan)
+        assert f"fonte fora de ordem lida em fatias de {plan.slice_row_groups} row groups" in plan.notes
+        seen.add(plan.slice_row_groups)
+    assert len(seen) == 2  # o orçamento decide o tamanho da fatia
+
+    (tmp_path / "ord").mkdir()
+    ordered_l, ordered_r = _slice_pair(tmp_path / "ord", shuffled=False)
+    plan = plan_windows(open_source(ordered_l), open_source(ordered_r), ["id"], window_rows=1000)
+    assert len(plan.windows) >= 4
+    assert plan.slice_sides == (False, False)
+    assert not any("em fatias" in n for n in plan.notes)
+
+    plan = plan_windows(open_source(lp), open_source(pl.read_parquet(rp)), ["id"], window_rows=1000)
+    assert plan.slice_sides == (True, False)  # o lado DataFrame não é fatiado
+
+
 def test_describe_and_errors() -> None:
     assert Window(0, with_nulls=True).describe() == "todas as linhas"
     assert "chaves nulas" in Window(0, None, (5,), with_nulls=True).describe()
@@ -298,16 +427,20 @@ def test_each_window_reads_only_its_files(tmp_path: Path) -> None:
     assert single.files == (None, None)  # DataFrame: não há arquivos
 
 
+@pytest.mark.parametrize("text", [False, True])
 @pytest.mark.parametrize("nulls", [False, True])
-def test_footer_statistics_give_the_same_plan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, nulls: bool) -> None:
-    """Com uma chave inteira, o planejamento usa as estatísticas dos rodapés (nulos, começo dos row groups, faixa de
-    cada arquivo) em vez de ler a chave; o plano sai o mesmo que lendo."""
+def test_footer_statistics_give_the_same_plan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, nulls: bool, text: bool
+) -> None:
+    """Com uma chave inteira ou de texto, o planejamento usa as estatísticas dos rodapés (nulos, começo dos row groups,
+    faixa de cada arquivo) em vez de ler a chave; o plano sai o mesmo que lendo."""
     from nini_datacomp import windows  # noqa: PLC0415
 
-    ids: list[int | None] = list(range(60_000))
+    ids: list[int | str | None] = [f"id-{i:010d}" for i in range(60_000)] if text else list(range(60_000))
     if nulls:
         ids[123] = None
-    df = pl.DataFrame({"id": ids, "v": [i % 7 for i in range(60_000)]}, schema={"id": pl.Int64, "v": pl.Int64})
+    dtype = pl.String if text else pl.Int64
+    df = pl.DataFrame({"id": ids, "v": [i % 7 for i in range(60_000)]}, schema={"id": dtype, "v": pl.Int64})
     for i in range(3):
         df.slice(i * 20_000, 20_000).write_parquet(tmp_path / f"p{i}.parquet", row_group_size=5_000)
     src = open_source(tmp_path)
@@ -316,9 +449,12 @@ def test_footer_statistics_give_the_same_plan(tmp_path: Path, monkeypatch: pytes
     assert fk.nulls == nulls
     assert fk.ranges is not None
     assert len(fk.ranges) == 3
+    if text:
+        assert fk.bounds is None  # texto: sem sobra
     if not nulls:
         assert fk.firsts is not None
-        assert fk.firsts["id"].to_list() == list(range(0, 60_000, 5_000))
+        want = [f"id-{i:010d}" for i in range(0, 60_000, 5_000)] if text else list(range(0, 60_000, 5_000))
+        assert fk.firsts["id"].to_list() == want
     fast = plan_windows(src, src, ["id"], window_rows=10_000)
     monkeypatch.setattr(windows, "_footer_keys", lambda *_: None)
     slow = plan_windows(src, src, ["id"], window_rows=10_000)
@@ -339,5 +475,30 @@ def test_footer_statistics_skip_renamed_and_cast_keys(tmp_path: Path) -> None:
     assert fk.ranges is None  # um arquivo só
     cast = renamed.with_columns([pl.col("id").cast(pl.Int32)])
     assert windows._footer_keys(cast, ["id"]) is None  # convertida depois da leitura: não vale
-    assert windows._footer_keys(open_source(tmp_path / "a.parquet"), ["s"]) is None  # texto
+    text = windows._footer_keys(open_source(tmp_path / "a.parquet"), ["s"])
+    assert text is not None  # texto: também vale
+    assert text.bounds is None
     assert windows._footer_keys(open_source(tmp_path / "a.parquet"), ["ID", "s"]) is None  # composta
+
+
+def test_text_key_plan_does_not_scan_the_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Com chave de texto em ordem e estatísticas no rodapé, o plano não varre a chave (nem amostra, nem faixas)."""
+    from nini_datacomp import windows  # noqa: PLC0415
+
+    n = 60_000
+    df = pl.DataFrame({"id": [f"id-{i:010d}" for i in range(n)], "v": [i % 7 for i in range(n)]})
+    for i in range(3):
+        df.slice(i * 20_000, 20_000).write_parquet(tmp_path / f"p{i}.parquet", row_group_size=5_000)
+    src = open_source(tmp_path)
+
+    def boom(*_: object, **__: object) -> None:
+        raise AssertionError("o plano leu a chave")
+
+    monkeypatch.setattr(windows, "_firsts_query", boom)
+    monkeypatch.setattr(windows, "_range_queries", boom)
+    monkeypatch.setattr(windows, "_sampled_bounds", boom)
+    plan = plan_windows(src, src, ["id"], window_rows=10_000)
+    assert len(plan.windows) > 1
+    assert plan.aligned_to_row_groups
+    assert plan.carry == (None, None)
+    assert_partition(plan, df, ["id"])

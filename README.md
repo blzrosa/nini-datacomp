@@ -163,7 +163,7 @@ SAMPLE DIFFERING ROWS
 | `memory_limit` | `"auto"` | orçamento de memória: bytes ou texto (`"512MB"`, `"2GB"`, `"1.5GiB"`); o pico fica dentro dele, também com o staging por janela |
 | `window_rows` | `None` | avançado: linhas por janela, no lugar do cálculo pelo `memory_limit` |
 | `threads` | `None` | threads dos kernels C++ (padrão: todos os núcleos) |
-| `isolation` | `"auto"` | onde rodar: `"inline"` (neste processo), `"process"` (à parte, com o alocador do Polars ajustado) ou `"auto"` (à parte só se um row group não cabe no `memory_limit` com o alocador padrão; veja [Memória](#memória)) |
+| `isolation` | `"auto"` | onde rodar: `"inline"` (neste processo), `"process"` (à parte, com o alocador do Polars ajustado) ou `"auto"` (à parte se um row group não cabe no `memory_limit` com o alocador padrão, ou se a fonte vai ser reparticionada pelo staging; veja [Memória](#memória)) |
 | `verify_hash` | `False` | confere as colunas exatas célula a célula em todos os pares, além do hash |
 | `unordered_lists` | `()` | colunas List comparadas sem a ordem dos elementos (`[1, 2]` = `[2, 1]`) |
 | `comparators` | `{}` | comparador próprio por coluna (veja [Comparadores próprios](#comparadores-próprios)) |
@@ -257,12 +257,21 @@ resultado como **amplificação de leitura**: `result.execution.read_amplificati
 linhas decodificadas divididas pelas linhas do lado (1,0 = cada linha é lida uma vez; 21,0 = a fonte foi lida 21
 vezes); é o valor do plano, antes do staging. Está em `execution`, não em `to_dict()`/`to_json()`. `nan` quando não foi medida.
 
+Uma fonte Parquet fora de ordem com amplificação até 15 é **lida em fatias de row groups**: cada janela é lida em
+fatias de poucos row groups seguidos de cada arquivo, uma por vez (o tamanho sai do `memory_limit`), em vez de o Polars
+decodificar de uma vez os row groups que o filtro da chave só descarta depois. Isso corta o pico pela metade (2M x 84
+com chave embaralhada e 1GB: de 1,3 GiB para ~0,6 GiB) por ~15% de tempo, e fica em `result.execution.notes`
+(`"fonte fora de ordem lida em fatias de N row groups"`). Uma fonte em ordem não é fatiada, e um lado `DataFrame` também não.
+
 Quando a fonte é Parquet, a amplificação passa de 15 e há mais de 2 janelas, o nini-datacomp faz o **staging por
-janela**: regrava a fonte numa pasta temporária, com um arquivo por janela (as fatias lidas são juntas por janela ao fim). Depois,
-ler a janela k abre só o arquivo dela. A pasta fica no `temp_dir` do `ReadOptions` (o do sistema por padrão), ocupa
+janela**: regrava a fonte numa pasta temporária, com os arquivos de cada janela (um por fatia lida e arquivo de
+origem; juntá-los num arquivo por janela deixou o staging 3x mais lento e foi tirado). Depois, ler a janela k abre só os
+arquivos dela. A pasta fica no `temp_dir` do `ReadOptions` (o do sistema por padrão), ocupa
 em disco algo próximo do tamanho da fonte (por lado reparticionado) e some no fim da comparação, mesmo com erro. A
 fonte é lida em fatias de `memory_limit / 10`, então o pico continua dentro do orçamento. O que aconteceu fica em
-`result.execution.notes` (`"fontes reparticionadas por janela"`).
+`result.execution.notes` (`"fontes reparticionadas por janela"`). Com o staging a comparação roda num processo à parte
+(`isolation="auto"`), e a chave de texto é planejada pelo rodapé do Parquet; com um lado `DataFrame`, o staging
+segue neste processo.
 
 ```python
 result = dc.compare("a/", "b/", on="id", memory_limit="1GB")
@@ -275,8 +284,8 @@ Medido em 10M linhas x 50 colunas com a chave embaralhada (mesma permutação no
 
 | `memory_limit` | janelas | tempo | pico | dentro do limite |
 |---|---:|---:|---:|:---:|
-| `"1GB"` (954 MiB) | 41 | 36 s | 734 MiB | sim |
-| `"2GB"` (1907 MiB) | 21 | 24 s | 1353 MiB | sim |
+| `"1GB"` (954 MiB) | 41 | 40 s | 751 MiB | sim |
+| `"2GB"` (1907 MiB) | 21 | 27 s | 1772 MiB | sim |
 
 Sem o staging, o mesmo caso com 1 GB levava 65 s e passava do limite (1,48 GiB). Mais memória significa menos
 janelas e menos fatias, então é mais rápido. Detalhes em

@@ -43,15 +43,23 @@ BASELINE = DOCS / "baseline.json"
 CASES = ("1000000x10", "1000000x50", "1000000x300", "10000000x10", "10000000x50", "10000000x300")
 MB = 1024 * 1024
 UNORDERED_CASES = ("10000000x50u", "30000000x50u")
+TEXT_TAG = "texto"
 _SCATTER = 999_983  # primo: id * _SCATTER % M é uma permutação dos ids (M primo maior que o maior id)
 
 
 def parse_case(case: str) -> tuple[Spec, bool]:
-    """``<linhas>x<colunas>[w][u]`` -> (especificação dos dados, fora de ordem?). ``w``: perfil wide84 (84 colunas, 48
-    exatas e 36 reais, ~6 mil linhas só da esquerda e ~400 só da direita em 22M, divergência de 5%); ``u``: chave
-    embaralhada."""
+    """``<linhas>x<colunas>[w][u]`` ou ``<linhas>x<colunas>t`` -> (especificação dos dados, fora de ordem?). ``w``:
+    perfil wide84 (84 colunas, 48 exatas e 36 reais, ~6 mil linhas só da esquerda e ~400 só da direita em 22M,
+    divergência de 5%); ``u``: chave embaralhada; ``t``: chave de texto (``tag`` "texto"; sem ``w``/``u``)."""
     unordered = case.endswith("u")
     base = case.removesuffix("u")
+    text = base.endswith("t")
+    if text:
+        base = base.removesuffix("t")
+        if unordered or base.endswith("w"):
+            raise ValueError("a chave de texto (sufixo t) não combina com w nem u")
+        rows, cols = (int(x) for x in base.split("x"))
+        return Spec(rows, cols, tag=TEXT_TAG), False
     wide = base.endswith("w")
     rows, cols = (int(x) for x in base.removesuffix("w").split("x"))
     if wide:
@@ -73,6 +81,8 @@ def case_root(case: str) -> Path:
 def case_dataset(case: str) -> Path:
     """Os dados do caso, gerados se ainda não existem (o caso ``u`` é derivado do ordenado)."""
     spec, unordered = parse_case(case)
+    if spec.tag == TEXT_TAG:
+        return dataset(f"{spec.rows}x{spec.cols}t")
     root = generate(spec, DATA) if spec.profile == WIDE84 else dataset(f"{spec.rows}x{spec.cols}")
     return unordered_dataset(root) if unordered else root
 
@@ -161,10 +171,6 @@ def worker(spec: dict[str, Any]) -> None:
         return
     from nini_datacomp.pipeline import compare_rows  # noqa: PLC0415 - no subprocesso, fora do cronômetro
 
-    if spec.get("layout") is not None:  # o staging de ferramenta de medição (C2): outro layout
-        from nini_datacomp import pipeline  # noqa: PLC0415
-
-        pipeline.STAGE_LAYOUT = spec["layout"]
     if spec.get("stage_divisor") is not None:  # ... ou outra fatia (nos dois modos do alocador)
         from nini_datacomp import windows  # noqa: PLC0415
 
@@ -468,14 +474,17 @@ def main() -> None:
         help="roda pelo dc.compare (com isolation='auto': o worker, se o plano pedir) em vez de pipeline.compare_rows",
     )  # fmt: skip
     ap.add_argument(
-        "--layout", choices=("window", "pieces", "sorted"), default=None,
-        help="o layout do staging (readers.StageLayout; só para medir)",
-    )  # fmt: skip
-    ap.add_argument(
         "--stage-divisor", type=int, default=None,
         help="o staging lê fatias de memory_limit / N (o padrão do pipeline é 10)",
     )  # fmt: skip
     args = ap.parse_args()
+    if args.via_compare:  # o worker do dc.compare não aplica estas flags: ignorá-las em silêncio invalidaria a medição
+        for flag, given in (
+            ("--stage-divisor", args.stage_divisor is not None),
+            ("--no-staging", args.no_staging),
+        ):
+            if given:
+                ap.error(f"{flag} não vale com --via-compare (o dc.compare não aplica a flag)")
     abs_tol = 1e-12 if args.mode == "columnwise" else 0.0
     results: dict[str, list[dict[str, Any]]] = {}
     variants = [(c, True) for c in args.cases]
@@ -490,7 +499,7 @@ def main() -> None:
             "left": str(root / "left"), "right": str(root / "right"), "memory_limit": args.memory_limit,
             "abs_tol": abs_tol,
             "partition": partition, "window_rows": args.window_rows, "allocator": args.allocator,
-            "via_compare": args.via_compare, "layout": args.layout, "stage_divisor": args.stage_divisor,
+            "via_compare": args.via_compare, "stage_divisor": args.stage_divisor,
         }  # fmt: skip
         want_columns = {c: n for c, n in exp.column_mismatches.items() if n}
         measure_once(spec)  # aquecimento (cache de disco), descartado

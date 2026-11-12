@@ -38,10 +38,8 @@ if TYPE_CHECKING:
 __all__ = [
     "DEFAULT_STAGE_BYTES",
     "SUFFIXES",
-    "WINDOW_COLUMN",
     "FileFormat",
     "ReadOptions",
-    "StageLayout",
     "Staged",
     "format_of",
     "read_sas",
@@ -174,11 +172,7 @@ def format_of(path: Path, options: ReadOptions) -> FileFormat:
 
 
 # ----------------------------------------------------------------------------- conversão para Parquet temporário
-# Como `stage_partitioned` grava as janelas: "window" = um arquivo por janela (os pedaços de cada janela juntados numa
-# segunda passada); "pieces" = os pedaços como saem da primeira passada, sem juntar (um arquivo por fatia e janela);
-# "sorted" = um arquivo por fatia, com as linhas ordenadas pela janela (coluna ``__w``)
-StageLayout = Literal["window", "pieces", "sorted"]
-WINDOW_COLUMN = "__w"
+_WINDOW_COLUMN = "__w"  # a coluna (só em memória, na primeira passada do staging) com o índice da janela de cada linha
 
 
 @dataclass
@@ -189,7 +183,6 @@ class Staged:
     _dir: tempfile.TemporaryDirectory[str] | None = None
     # só em `stage_partitioned`: os índices (em ``files``) dos arquivos de cada janela, na ordem das janelas
     groups: list[tuple[int, ...]] = field(default_factory=list)
-    layout: StageLayout = "window"
 
     @property
     def path(self) -> Path:
@@ -207,16 +200,6 @@ class Staged:
             self._dir = None
 
 
-def _merge_window(files: list[Path], out: Path) -> Path:
-    """Os arquivos de uma janela num só (e apaga os pequenos, para o disco não guardar a fonte duas vezes)."""
-    if len(files) == 1:
-        return files[0].replace(out)
-    pl.concat([pl.read_parquet(f) for f in files], rechunk=False).write_parquet(out, compression="lz4", statistics=True)
-    for f in files:
-        f.unlink()
-    return out
-
-
 def stage_partitioned(
     source: Source,
     windows: Sequence[Window],
@@ -224,21 +207,20 @@ def stage_partitioned(
     options: ReadOptions,
     *,
     chunk_bytes: int = DEFAULT_STAGE_BYTES,
-    layout: StageLayout = "window",
 ) -> Staged:
     """Regrava ``source`` (Parquet, com as conversões dela aplicadas) em uma pasta temporária com os arquivos de cada
     janela (`Staged.groups` diz quais arquivos são de qual janela). Uma janela sem linhas não tem arquivo. Assim ler a
     janela k abre só as linhas dela, não a fonte inteira (o Polars não pula row groups de uma fonte fora de ordem).
     A fonte é lida em fatias de ~``chunk_bytes`` em memória (o ``sink_parquet`` em streaming passa de 4x o que lê: o
-    pico dele acompanha o tamanho do arquivo, não um limite), então cada janela sai da primeira passada com um arquivo
-    por fatia, e uma segunda passada junta os arquivos de cada janela num só (uma janela cabe na memória por
-    construção): medido, abrir 16 arquivos pequenos por janela custava ~5x a leitura de um."""
+    pico dele acompanha o tamanho do arquivo, não um limite), e cada janela sai com um arquivo por fatia (os pedaços
+    ficam como saíram, sem juntar: juntar os de cada janela num só arquivo deixou o staging 3x mais lento, medido em
+    2026-11-12 com 10M x 50 e chave fora de ordem)."""
     schema = source.scan(source.files[:1]).collect_schema()
     dtypes = [schema[k] for k in keys]
     index = _window_index([w.predicate(keys, dtypes) for w in windows])
     rows = _row_group_rows(schema, chunk_bytes)
     tmp = tempfile.TemporaryDirectory(prefix="nini-datacomp-", dir=options.temp_dir, ignore_cleanup_errors=True)
-    staged = Staged(_dir=tmp, layout=layout)
+    staged = Staged(_dir=tmp)
     try:
         found: list[list[Path]] = [[] for _ in windows]
         for k, f in enumerate(source.files):
@@ -248,18 +230,7 @@ def stage_partitioned(
             total = lf.select(pl.len()).collect().item()
             for n, offset in enumerate(range(0, total, rows)):
                 df = lf.slice(offset, rows).with_columns(index).collect()
-                if layout == "sorted":
-                    # uma fatia, um arquivo, com as linhas ordenadas pela janela: os row groups (~1/4 de uma janela) têm
-                    # as estatísticas de ``__w`` apertadas, e o Polars pula os que não são da janela lida
-                    df = df.sort(WINDOW_COLUMN, maintain_order=True)
-                    out = folder / f"{n:06d}.parquet"
-                    df.write_parquet(
-                        out, compression="lz4", statistics=True, row_group_size=max(1_024, rows // len(windows) // 4)
-                    )
-                    del df
-                    staged.files.append(out)
-                    continue
-                parts = df.partition_by(WINDOW_COLUMN, as_dict=True, include_key=False)
+                parts = df.partition_by(_WINDOW_COLUMN, as_dict=True, include_key=False)
                 del df
                 outs = {cast(int, i): folder / f"{cast(int, i):05d}-{n:06d}.parquet" for (i,) in parts}
                 with ThreadPoolExecutor() as pool:  # a escrita solta o GIL
@@ -271,19 +242,13 @@ def stage_partitioned(
                         job.result()
                 for i, out in outs.items():
                     found[i].append(out)
-        if layout == "sorted":
-            staged.groups = [tuple(range(len(staged.files)))] * len(windows)  # toda janela abre todas as fatias
-            return staged
-        for i, files in enumerate(found):
+        for i, files in enumerate(found):  # os arquivos como saíram, só passam para fora das subpastas
             first = len(staged.files)
-            if layout == "window":
-                staged.files += [_merge_window(files, staged.path / f"w{i:05d}.parquet")] if files else []
-            else:  # "pieces": os arquivos como saíram, só passam para fora das subpastas
-                staged.files += [f.replace(staged.path / f"w{i:05d}-{j:05d}.parquet") for j, f in enumerate(files)]
+            staged.files += [f.replace(staged.path / f"w{i:05d}-{j:05d}.parquet") for j, f in enumerate(files)]
             staged.groups.append(tuple(range(first, len(staged.files))))
         for folder in staged.path.iterdir():
             if folder.is_dir():
-                folder.rmdir()  # as subpastas por origem ficaram vazias após a junção
+                folder.rmdir()  # as subpastas por origem ficaram vazias
     except BaseException:
         staged.cleanup()
         raise
@@ -296,7 +261,7 @@ def _window_index(preds: Sequence[pl.Expr | None]) -> pl.Expr:
     index = pl.lit(len(inside) - 1, pl.Int32)
     for i in range(len(inside) - 2, -1, -1):
         index = pl.when(inside[i]).then(pl.lit(i, pl.Int32)).otherwise(index)
-    return index.alias("__w")
+    return index.alias(_WINDOW_COLUMN)
 
 
 def _row_group_rows(schema: pl.Schema, chunk_bytes: int) -> int:

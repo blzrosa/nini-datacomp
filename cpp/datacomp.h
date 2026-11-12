@@ -53,6 +53,7 @@ DC_API void dc_pool_stats(int64_t* out);
 /* parquet_meta.cpp */
 DC_API int64_t dc_parquet_row_groups(const uint8_t* footer, int64_t n, int64_t* rows, int64_t cap);
 DC_API int64_t dc_parquet_key_stats(const uint8_t* footer, int64_t n, const uint8_t* name, int64_t name_len, int64_t* out, int64_t cap);
+DC_API int64_t dc_parquet_text_stats(const uint8_t* footer, int64_t n, const uint8_t* name, int64_t name_len, int64_t* out, int64_t cap);
 
 /* rowhash.cpp */
 DC_API int dc_row_hash(int k, const int64_t* desc, int64_t start, int64_t end, int first, uint64_t* out);

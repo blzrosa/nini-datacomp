@@ -6,14 +6,18 @@ janelas somam. As linhas com nulo em alguma coluna da chave vão todas para a pr
 
 Como o plano é feito, sem a memória crescer com a tabela:
 
-1. uma passada só pelas colunas da chave de cada lado, sem guardá-las: linhas e se há chave nula;
+0. antes de tudo, sem ler dado (`may_fit_inline`): se o schema e os rodapés já provam que, com o alocador padrão, nem
+   um row group cabe neste processo, o pipeline vai direto ao worker e o plano é feito só lá;
+1. uma passada só pelas colunas da chave de cada lado, sem guardá-las: linhas e se há chave nula (o que os rodapés dos
+   Parquet já dizem não é lido);
 2. o custo por linha na memória (todas as colunas), medido pelo Polars numa amostra: é a memória que a janela ocupa
    depois de lida, não o tamanho comprimido no disco;
 3. linhas por janela = ``memory_limit`` x 0,8 / (4 x bytes por linha dos dois lados + o trabalho dos kernels). O 4 é
    o medido na fase 1c: a janela em uso, a seguinte sendo lida e as cópias temporárias do Polars;
-4. fronteiras: se um lado é Parquet gravado em ordem (a chave do começo de cada row group, lida do arquivo, está em
-   ordem), cada janela começa num row group e nenhum é decodificado duas vezes. Senão, os quantis de uma amostra
-   regular de até 200 mil chaves.
+4. fronteiras: se um lado é Parquet gravado em ordem (a chave do começo de cada row group, do rodapé ou lida do
+   arquivo, está em ordem), cada janela começa num row group e nenhum é decodificado duas vezes. Só o lado tentado
+   primeiro (mais linhas) tem essa chave lida junto com o resto; a do outro lado só é lida se o primeiro não
+   alinhar. Senão, os quantis de uma amostra regular de até 200 mil chaves.
 
 Substitui as janelas do datacompolars, que exigiam a 1ª coluna da chave inteira (com chave de texto, a tabela inteira
 ia numa janela só).
@@ -38,7 +42,7 @@ import polars as pl
 from .core.allocator import Mode, mode
 from .io import KeyStats, Source, Where, key_stats, row_groups
 
-__all__ = ["MIN_MEMORY", "Plan", "Window", "key_between", "parse_memory_limit", "plan_windows"]
+__all__ = ["MIN_MEMORY", "Plan", "Window", "key_between", "may_fit_inline", "parse_memory_limit", "plan_windows"]
 
 AUTO_FRACTION = 0.25  # "auto": 1/4 da memória livre...
 AUTO_CAP = 2 * 1024**3  # ... até 2 GiB
@@ -61,8 +65,10 @@ IN_FLIGHT = 4.0
 # 3,5 e com 4 (a janela é a mesma); com 5 grupos (o que este fator dá ali), 700 ± 26 MB (até 718), ~7% mais lento.
 GROUP_IN_FLIGHT = 6.75
 # Bytes fixos por coluna lida, por janela (buffers de página e de decodificação, que não crescem com as linhas): o
-# excesso de pico cresce com a largura da tabela mesmo com a janela de ~1 row group. Valores iniciais 0 (o plano de
-# antes); a calibrar com tools/bench_hash.py --via-compare --allocator default (ver o passo 3 do SPEC).
+# excesso de pico cresce com a largura da tabela mesmo com a janela de ~1 row group. Ficam em 0: o excesso medido em
+# 10M x 300 com 1GB pelo `dc.compare` era o plano do host (~330 MiB presos no processo parado), não o worker. Com o
+# host sem planejar o que vai para o worker (`may_fit_inline`), o pico ficou em 701 a 726 MiB (limite 954), com o
+# host crescendo ~32 MiB (2026-11-12, tools/bench_hash.py --via-compare --allocator default).
 GROUP_COLUMN_BYTES = 0  # modo tuned, janela de 1 row group lida em grupos de colunas (o worker)
 DEFAULT_COLUMN_BYTES = 0  # modo default (alocador padrão do Polars)
 # Fatia do staging (`_stage_chunk_bytes`): memory_limit / STAGE_DIVISOR no modo tuned (o pico real é ~3x a fatia: cópia,
@@ -74,6 +80,14 @@ KERNEL_BYTES_PER_ROW = 32  # pares (8), hashes dos dois lados (16) e tabelas, po
 # amplificação de leitura (Plan.read_amplification) acima da qual a fonte é reparticionada. Medido (docs/benchmarks/
 # leitura_otimizacao.md): com amplificação 3 a 10 regravar custou mais que ler a mais (até 2,2x); com 21 ou mais ganhou.
 PARTITION_THRESHOLD = 15.0
+# Fonte Parquet fora de ordem com amplificação de leitura acima de SLICE_AMPLIFICATION é lida em fatias de poucos row
+# groups (`Plan.slice_row_groups`), uma por vez, em vez de deixar o Polars decodificar de uma vez os row groups que o
+# filtro da chave só descarta depois. Medido (2026-11-12, `2000000x84wu` a 1GB, 14 janelas): pico 1.372 MB sem fatias,
+# 613/699/843 MB com fatias de 1/2/4 row groups (8,1/7,7/7,6 s); `10000000x50u` a 1GB sem staging, fatias de 1/2/3:
+# 605/677/712 MB. Cada row group a mais na fatia custa ≤ ~1 row group dos dois lados. SLICE_SHARE: fração do orçamento
+# que a fatia (os dois lados) pode ocupar.
+SLICE_SHARE = 0.25
+SLICE_AMPLIFICATION = 2.0
 # Modo "default" do alocador (o mimalloc do Polars guardando a memória liberada por 1000 ms; core/allocator.py).
 # Medido em 2026-11-11 (16 threads): o pico é ~ DEFAULT_BASE (o processo e o que o mimalloc guarda) +
 # DEFAULT_IN_FLIGHT x bytes por linha dos dois lados x linhas da janela. Valores iniciais; a calibrar com
@@ -246,6 +260,10 @@ class Plan:
     carry: tuple[tuple[tuple[int, int], ...] | None, tuple[tuple[int, int], ...] | None] = (None, None)
     # bytes de cada fatia lida pelo staging (`pipeline._repartition`); a regra do orçamento: `_stage_chunk_bytes`
     stage_chunk_bytes: int = MIN_STAGE_CHUNK
+    # por lado: lido em fatias de `slice_row_groups` row groups consecutivos de cada arquivo (`pipeline.WindowReader`),
+    # uma por vez: fonte Parquet fora de ordem (amplificação > SLICE_AMPLIFICATION), sem leitura com sobra
+    slice_row_groups: int = 1
+    slice_sides: tuple[bool, bool] = (False, False)
 
     def frame_bytes(self, left: pl.DataFrame, right: pl.DataFrame) -> int:
         """O tamanho de uma parte lida (os dois lados), pelos bytes por linha do plano: sem o ``estimated_size`` do
@@ -507,6 +525,39 @@ def _window_size(
     return floor, max(1, min(groups, columns)), notes, fits_inline
 
 
+def _bytes_floor(source: Source) -> tuple[float, set[str]]:
+    """Um piso dos bytes por linha, só pelo schema: a largura fixa nos tipos fixos, 16 B (a view, sem validade nem
+    dados) em ``String``/``Binary`` e 0 no resto. Nunca passa do que a amostra mediria. Também devolve as colunas."""
+    schema = source.lazy.collect_schema()
+    total = 0.0
+    for dtype in schema.values():
+        width = _fixed_width(dtype)
+        if width is None:
+            width = 16.0 if dtype.base_type().__name__ in ("String", "Binary") else 0.0
+        total += width
+    return total, set(schema)
+
+
+def may_fit_inline(
+    left: Source,
+    right: Source,
+    keys: Sequence[str],
+    memory_limit: int | str = "auto",
+    *,
+    window_rows: int | None = None,
+    allocator: Mode | None = None,
+) -> bool:
+    """``False`` só se o schema e os rodapés já provam que o plano completo daria ``fits_inline`` falso (sem ler
+    dado); ``True`` quando não se sabe (segue o planejamento normal)."""
+    budget = parse_memory_limit(memory_limit)
+    (fl, cl), (fr, cr) = _bytes_floor(left), _bytes_floor(right)
+    columns = len((cl | cr) - set(keys))
+    return _window_size(
+        left, right, (fl, fr), budget, window_rows=window_rows, columns=columns,
+        allocator=mode() if allocator is None else allocator,
+    )[3]  # fmt: skip
+
+
 FileRange = tuple[Any, Any, bool]  # (menor e maior valor da 1ª coluna da chave, se tem chave nula) de um arquivo
 
 
@@ -548,9 +599,9 @@ def _window_files(ranges: list[FileRange] | None, windows: list[Window]) -> list
 
 @dataclass(frozen=True)
 class _FooterKeys:
-    """O que o rodapé dos Parquet de um lado diz da chave (uma coluna inteira), sem ler os dados: se há chave nula, a
-    chave no começo de cada row group (só se os row groups estão em ordem e não se sobrepõem: aí o mínimo de cada um é
-    a primeira chave) e a faixa de chaves de cada arquivo."""
+    """O que o rodapé dos Parquet de um lado diz da chave (uma coluna inteira ou de texto), sem ler os dados: se há
+    chave nula, a chave no começo de cada row group (só se os row groups estão em ordem e não se sobrepõem: aí o mínimo
+    de cada um é a primeira chave) e a faixa de chaves de cada arquivo."""
 
     nulls: bool
     firsts: pl.DataFrame | None
@@ -581,16 +632,18 @@ def _source_name(source: Source, column: str) -> str | None:
 
 def _footer_keys(source: Source, keys: Sequence[str]) -> _FooterKeys | None:
     """As estatísticas da chave nos rodapés (veja `_FooterKeys`), ou None se não servem: a chave não é uma coluna
-    inteira só, foi convertida depois da leitura, ou algum row group não tem as estatísticas."""
+    inteira ou de texto só, foi convertida depois da leitura, ou algum row group não tem as estatísticas. Com chave de
+    texto `bounds` fica None (a sobra só existe para chave inteira)."""
     if not source.is_parquet or len(keys) != 1:
         return None
     dtype = source.lazy.collect_schema()[keys[0]]
     name = _source_name(source, keys[0])
-    if name is None or not dtype.is_integer():
+    text = dtype == pl.String
+    if name is None or not (text or dtype.is_integer()):
         return None
     per_file: list[list[KeyStats]] = []
     for path in source.files:
-        stats = [g for g in key_stats(path, name) if g.rows > 0]
+        stats = [g for g in key_stats(path, name, text=text) if g.rows > 0]
         if any(g.nulls is None or (g.min is None and g.nulls < g.rows) for g in stats):
             return None  # sem estatísticas (ou só a contagem de nulos sem o mínimo e o máximo)
         per_file.append(stats)
@@ -607,7 +660,8 @@ def _footer_keys(source: Source, keys: Sequence[str]) -> _FooterKeys | None:
     firsts = None
     bounds: tuple[tuple[int, int], ...] | None = None
     ordered = all(g.min is not None and g.max is not None for g in groups) and all(
-        a.max is not None and b.min is not None and a.max < b.min for a, b in pairwise(groups)
+        a.max is not None and b.min is not None and a.max < b.min  # type: ignore[operator]  # int com int, str com str
+        for a, b in pairwise(groups)
     )
     if ordered and len(groups) > 1:
         starts = [s for s, g in zip(_row_group_starts(source), _all_groups(source), strict=True) if g > 0]
@@ -616,9 +670,11 @@ def _footer_keys(source: Source, keys: Sequence[str]) -> _FooterKeys | None:
         )
     # para a leitura com sobra a ordem dos arquivos não importa (um `extra-*` com chaves altas pode vir antes do resto):
     # basta as faixas dos row groups, ordenadas pelo mínimo, não se sobreporem
-    spans = sorted(((g.min, g.max) for g in groups if g.min is not None and g.max is not None), key=lambda b: b[0])
-    if len(spans) > 1 and all(a[1] < b[0] for a, b in pairwise(spans)):
-        bounds = tuple(spans)
+    if not text:
+        spans = [(g.min, g.max) for g in groups if isinstance(g.min, int) and isinstance(g.max, int)]
+        spans.sort(key=lambda b: b[0])
+        if len(spans) > 1 and all(a[1] < b[0] for a, b in pairwise(spans)):
+            bounds = tuple(spans)
     return _FooterKeys(nulls, firsts, ranges, bounds)
 
 
@@ -664,6 +720,32 @@ def _all_groups(source: Source) -> list[int]:
     return [n for path in source.files for n in row_groups(path)]
 
 
+def _choose_bounds(
+    sides: list[tuple[str, Source, pl.LazyFrame, int, bool, pl.DataFrame | pl.LazyFrame | None]],
+    keys: Sequence[str],
+    rows_per_window: int,
+    head: int,
+) -> tuple[list[tuple[Any, ...]], str, bool]:
+    """As fronteiras das janelas, a base e se estão alinhadas aos row groups. Tenta cada lado na ordem de ``sides``;
+    o ``firsts`` ainda pendente (LazyFrame) só é coletado quando o laço chega ao lado."""
+    for name, source, _, n, nulls, pending in sides:
+        if n > rows_per_window and not nulls and pending is not None:
+            first = _collect([pending])[0] if isinstance(pending, pl.LazyFrame) else pending
+            bounds = _aligned_bounds(source, first, keys, n=n, rows_per_window=rows_per_window, first=head)
+            if bounds:
+                return list(bounds), name, True
+    base_name, _, lazy, n, _, _ = sides[0]
+    return list(_sampled_bounds(lazy, keys, n, rows_per_window, head) or []), base_name, False
+
+
+def _first_side(count_q: Sequence[pl.LazyFrame | pl.DataFrame]) -> int | None:
+    """O lado que o laço de fronteiras tenta primeiro (mais linhas, esquerdo no empate), se as contagens já são
+    conhecidas antes da rodada de consultas."""
+    if isinstance(count_q[0], pl.DataFrame) and isinstance(count_q[1], pl.DataFrame):
+        return 0 if int(count_q[0].item()) >= int(count_q[1].item()) else 1
+    return None
+
+
 def plan_windows(
     left: Source,
     right: Source,
@@ -679,13 +761,15 @@ def plan_windows(
     ``allocator``: o modo do alocador do Polars (``core.allocator.mode()`` se ``None``). ``window_rows`` (avançado)
     fixa as linhas por janela em vez de calculá-las pelo orçamento. A memória do
     planejamento não cresce com a tabela: só as contagens, a chave do começo de cada row group e uma amostra limitada.
+    O plano só lê a coluna da chave quando o rodapé não serve (chave composta, convertida, sem estatísticas ou que
+    não é inteira nem texto); com chave inteira ou de texto num Parquet com estatísticas, não a lê.
     """
     if not keys:
         raise ValueError("a chave precisa de ao menos uma coluna")
     budget = parse_memory_limit(memory_limit)
     kl, kr = _key_lazy(left, keys), _key_lazy(right, keys)
     # o que os rodapés dos Parquet já dizem da chave (nulos, começo dos row groups, faixa de cada arquivo) não precisa
-    # de consulta: com uma chave inteira, o planejamento não lê a chave nenhuma vez
+    # de consulta: com uma chave inteira ou de texto, o planejamento não lê a chave nenhuma vez
     footer = [_footer_keys(left, keys), _footer_keys(right, keys)]
     null_q: list[pl.LazyFrame | pl.DataFrame] = [
         kl.select(_any_null(keys).any()) if footer[0] is None else pl.DataFrame({"n": [footer[0].nulls]}),
@@ -696,14 +780,21 @@ def plan_windows(
         for src, lazy, fk in ((left, kl, footer[0]), (right, kr, footer[1]))
     ]
     ranges_q = [_range_queries(src, keys) if fk is None else [] for src, fk in ((left, footer[0]), (right, footer[1]))]
+    count_q = [_row_count(left, kl), _row_count(right, kr)]
+    # a consulta de `firsts` (varredura da chave) só vai na rodada para o lado que o laço de fronteiras tenta primeiro
+    # (mais linhas, esquerdo no empate), e só se a ordem é sabida antes dela; a do outro lado fica pendente e só é
+    # coletada se a base não alinhar
+    first_side = _first_side(count_q)
+    in_round = [q for i, q in enumerate(firsts_q) if q is not None and (i == first_side or isinstance(q, pl.DataFrame))]
     # o resto numa rodada só de consultas, em paralelo: a amostra de cada lado, as linhas e o que os rodapés não deram
     got = iter(_collect([
         _sample(left, _variable_columns(left), sample_rows), _sample(right, _variable_columns(right), sample_rows),
-        *null_q, _row_count(left, kl), _row_count(right, kr), *[q for q in firsts_q if q is not None], *ranges_q[0],
-        *ranges_q[1],
+        *null_q, *count_q, *in_round, *ranges_q[0], *ranges_q[1],
     ]))  # fmt: skip
     sample_l, sample_r, null_l, null_r, count_l, count_r = (next(got) for _ in range(6))
-    firsts = [None if q is None else next(got) for q in firsts_q]
+    firsts: list[pl.DataFrame | pl.LazyFrame | None] = [
+        None if q is None else (next(got) if any(q is r for r in in_round) else q) for q in firsts_q
+    ]
     ranges = [
         fk.ranges if fk is not None else _file_ranges([next(got) for _ in q])
         for fk, q in ((footer[0], ranges_q[0]), (footer[1], ranges_q[1]))
@@ -736,17 +827,7 @@ def plan_windows(
     sides = sorted(
         [("left", left, kl, nl, null_l, firsts[0]), ("right", right, kr, nr, null_r, firsts[1])], key=lambda s: -s[3]
     )
-    bounds: list[tuple[Any, ...]] | None = None
-    base_name, aligned = sides[0][0], False
-    for name, source, _, n, nulls, first in sides:
-        if n > rows_per_window and not nulls and first is not None:
-            bounds = _aligned_bounds(source, first, keys, n=n, rows_per_window=rows_per_window, first=head)
-            if bounds:
-                base_name, aligned = name, True
-                break
-    if not bounds:
-        _, _, lazy, n, _, _ = sides[0]
-        bounds = _sampled_bounds(lazy, keys, n, rows_per_window, head)
+    bounds, base_name, aligned = _choose_bounds(sides, keys, rows_per_window, head)
     unique: list[tuple[Any, ...]] = []
     for b in bounds:
         if not unique or b != unique[-1]:  # chave repetida: a mesma fronteira uma vez só
@@ -770,10 +851,19 @@ def plan_windows(
     for i, groups_read in enumerate(carry):
         if groups_read is not None:
             by_group[i] = amplification[i] = 1.0  # cada row group decodificado uma vez
+    slice_sides = (
+        left.is_parquet and carry[0] is None and amplification[0] > SLICE_AMPLIFICATION,
+        right.is_parquet and carry[1] is None and amplification[1] > SLICE_AMPLIFICATION,
+    )
+    slice_row_groups = 1
+    if any(slice_sides):
+        per_row_group = _largest_row_group(left, right) * (bl + br) / groups
+        slice_row_groups = max(1, int(budget * SLICE_SHARE / per_row_group)) if per_row_group > 0 else 1
+        notes.append(f"fonte fora de ordem lida em fatias de {slice_row_groups} row groups")
     return Plan(
         windows, rows_per_window, budget, bpr, rows, base_name, aligned, notes, files, **extra,
         read_amplification=(amplification[0], amplification[1]), row_group_amplification=(by_group[0], by_group[1]),
-        carry=carry,
+        carry=carry, slice_row_groups=slice_row_groups, slice_sides=slice_sides,
     )  # fmt: skip
 
 

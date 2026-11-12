@@ -20,6 +20,7 @@ from collections.abc import Collection, Iterator, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from itertools import pairwise
+from pathlib import Path
 from typing import Any, Literal
 
 import numpy as np
@@ -31,10 +32,10 @@ from .core.compare import Tolerance, compare_column, compare_pairs, tolerance_fo
 from .core.keys import Alignment, align_frames, align_keys, align_pieces
 from .core.memory import empty
 from .core.rowhash import Part, diff_pairs, row_hash, row_hash_parts
-from .io import Source, SourceLike, open_source, partition_source
+from .io import Source, SourceLike, open_source, partition_source, row_groups
 from .isolation import NeedsIsolation
-from .readers import ReadOptions, StageLayout
-from .windows import PARTITION_THRESHOLD, Plan, Window, key_between, plan_windows
+from .readers import ReadOptions
+from .windows import PARTITION_THRESHOLD, Plan, Window, key_between, may_fit_inline, plan_windows
 
 __all__ = [
     "Casting",
@@ -155,6 +156,7 @@ class WindowReader:
         self.timer = _Timer()
         self.window_bytes = 0  # maior parte lida (os dois lados), pelos bytes por linha do plano
         self._carry: list[_Carry | None] = [None, None]
+        self._row_groups: dict[Path, list[int]] = {}  # linhas por row group de cada arquivo lido em fatias
 
     @property
     def decoded_with_carry(self) -> tuple[int | None, int | None]:
@@ -198,6 +200,31 @@ class WindowReader:
         carry.rest = rest if (rest := frame.filter(pl.col(key) >= hi)).height else None
         return frame.filter(pl.col(key) < hi)
 
+    def _read_sliced(
+        self, src: Source, pred: pl.Expr | None, columns: list[str] | None, files: tuple[int, ...] | None
+    ) -> pl.DataFrame:
+        """A janela de um lado Parquet fora de ordem, lida em fatias de `Plan.slice_row_groups` row groups seguidos de
+        cada arquivo, uma por vez: o Polars decodifica de uma vez todos os row groups da leitura antes do filtro da
+        chave, e com a fonte fora de ordem quase tudo isso é descartado. O ``slice`` vem antes do predicado."""
+        paths = src.files if files is None else [src.files[i] for i in files]
+        step = self.plan.slice_row_groups
+        parts: list[pl.DataFrame] = []
+        for path in paths:
+            sizes = self._row_groups.get(path)
+            if sizes is None:
+                sizes = self._row_groups[path] = row_groups(path)
+            offset = 0
+            for i in range(0, len(sizes), step):
+                n = sum(sizes[i : i + step])
+                lf = src.scan([path], rows=(offset, n))
+                lf = lf if pred is None else lf.filter(pred)
+                parts.append((lf if columns is None else lf.select(columns)).collect(engine=self.engine))
+                offset += n
+        if not parts:  # arquivos sem linhas: zero linhas, com o schema certo
+            lf = src.scan(paths[:1]).filter(pl.lit(False))
+            parts.append((lf if columns is None else lf.select(columns)).collect(engine=self.engine))
+        return parts[0] if len(parts) == 1 else pl.concat(parts, rechunk=False)
+
     def _read_side(
         self, side: int, src: Source, window: Window, columns: list[str] | None, files: tuple[int, ...] | None
     ) -> pl.DataFrame:
@@ -205,11 +232,11 @@ class WindowReader:
         if carry is not None:
             return self._read_with_carry(carry, src, window, columns, files)
         pred = window.predicate(self.keys, self.dtypes)
-        if src.window_column is not None:  # reparticionada "sorted": a janela é ``coluna == k``
-            pred = pl.col(src.window_column) == window.index
         if src.frame is not None:  # em memória: filtrar o DataFrame não passa pelo planejador lazy
             frame = src.frame if pred is None else src.frame.filter(pred)
             return frame if columns is None else frame.select(columns)
+        if self.plan.slice_sides[side] and src.files and (files is None or files):
+            return self._read_sliced(src, pred, columns, files)
         if files is not None:  # só os arquivos cuja faixa de chaves encosta na janela
             if files:
                 lf = src.scan([src.files[i] for i in files])
@@ -220,8 +247,6 @@ class WindowReader:
         lf = lf if pred is None else lf.filter(pred)
         if columns is not None:
             lf = lf.select(columns)
-        elif src.window_column is not None:
-            lf = lf.drop(src.window_column)
         return lf.collect(engine=self.engine)
 
     def _read(self, task: tuple[Window, int]) -> tuple[Window, int, pl.DataFrame, pl.DataFrame, float]:
@@ -623,7 +648,8 @@ def _run(
     isolate: bool = False,
 ) -> RowCounts:
     """``isolate``: levanta ``NeedsIsolation`` se o plano diz que, neste processo, nem um row group cabe no
-    memory_limit (o chamador roda tudo num worker com o alocador ajustado; ``isolation.py``)."""
+    memory_limit, ou se vai reparticionar uma fonte (``_stage_sides``): o chamador roda tudo num worker com o
+    alocador ajustado (``isolation.py``)."""
     t0 = time.perf_counter()
     keys = list(on)
     ls, rs = sources if sources is not None else (open_source(left), open_source(right))
@@ -646,9 +672,11 @@ def _run(
     )
     t = time.perf_counter()
     setup_s = t - t0  # abrir as fontes, alinhar os schemas, as conversões de tipo
+    if isolate and not may_fit_inline(ls, rs, keys, memory_limit, window_rows=window_rows):
+        raise NeedsIsolation  # o schema já prova que nem um row group cabe: o worker planeja, o host não gasta memória
     plan = plan_windows(ls, rs, keys, memory_limit, window_rows=window_rows)
     plan_s = time.perf_counter() - t
-    if isolate and not plan.fits_inline:
+    if isolate and (not plan.fits_inline or any(_stage_sides(plan, ls, rs))):
         raise NeedsIsolation
 
     t = time.perf_counter()
@@ -712,7 +740,15 @@ def _run(
             src.cleanup()
 
 
-STAGE_LAYOUT: StageLayout = "window"  # como o staging grava as janelas (`readers.StageLayout`)
+def _stage_sides(plan: Plan, ls: Source, rs: Source) -> tuple[bool, bool]:
+    """Os lados que `_repartition` regrava: mais de 2 janelas, fonte Parquet e amplificação por row group acima de
+    `PARTITION_THRESHOLD`."""
+    if len(plan.windows) <= 2:
+        return False, False
+    left, right = (
+        src.is_parquet and plan.row_group_amplification[i] > PARTITION_THRESHOLD for i, src in enumerate((ls, rs))
+    )
+    return left, right
 
 
 def _repartition(
@@ -726,19 +762,20 @@ def _repartition(
     sides = [ls, rs]
     files = list(plan.files)
     owned: list[Source] = []
-    if len(plan.windows) > 2:
-        opts = read_options if read_options is not None else (ReadOptions(), ReadOptions())
-        for i, src in enumerate(sides):
-            if src.is_parquet and plan.row_group_amplification[i] > PARTITION_THRESHOLD:
-                new, groups = partition_source(
-                    src, plan.windows, keys, opts[i], chunk_bytes=plan.stage_chunk_bytes,
-                    layout=STAGE_LAYOUT,
-                )  # fmt: skip
-                sides[i] = new
-                files[i] = groups
-                owned.append(new)
+    opts = read_options if read_options is not None else (ReadOptions(), ReadOptions())
+    owned_side = _stage_sides(plan, ls, rs)
+    for i, stage in enumerate(owned_side):
+        if stage:
+            new, groups = partition_source(sides[i], plan.windows, keys, opts[i], chunk_bytes=plan.stage_chunk_bytes)
+            sides[i] = new
+            files[i] = groups
+            owned.append(new)
     if owned:
-        plan = replace(plan, files=(files[0], files[1]), notes=[*plan.notes, "fontes reparticionadas por janela"])
+        slice_sides = (plan.slice_sides[0] and not owned_side[0], plan.slice_sides[1] and not owned_side[1])
+        plan = replace(
+            plan, files=(files[0], files[1]), slice_sides=slice_sides,
+            notes=[*plan.notes, "fontes reparticionadas por janela"],
+        )  # fmt: skip
     return plan, sides[0], sides[1], owned
 
 

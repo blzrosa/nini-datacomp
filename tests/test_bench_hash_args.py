@@ -54,6 +54,42 @@ def test_window_rows_and_out_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     assert list(json.loads(out.read_text(encoding="utf-8"))) == ["500x3"]
 
 
+@pytest.mark.parametrize("flag", [["--stage-divisor", "20"], ["--no-staging"]])
+def test_via_compare_rejects_flags_it_would_ignore(
+    flag: list[str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(sys, "argv", ["bench_hash", "--cases", "500x3", "--via-compare", *flag])
+    with pytest.raises(SystemExit) as exc:
+        bench_hash.main()
+    assert exc.value.code == 2
+    assert flag[0] in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("flag", [["--stage-divisor", "20"], ["--no-staging"]])
+def test_c2_flags_accepted_without_via_compare(
+    flag: list[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = generate(Spec(500, 3, divergence=0.1), tmp_path / "data", log=lambda _: None)
+    exp = load_expected(root)
+    seen: list[dict[str, Any]] = []
+
+    def fake_measure(s: dict[str, Any]) -> dict[str, Any]:
+        seen.append(s)
+        return {
+            "seconds": 1.0, "peak_mb": 1.0, "common": exp.common, "left_only": exp.left_only,
+            "right_only": exp.right_only, "mismatched": exp.mismatched,
+            "columns": {c: n for c, n in exp.column_mismatches.items() if n}, "windows": 1, "timings": {},
+        }  # fmt: skip
+
+    monkeypatch.setattr(bench_hash, "measure_once", fake_measure)
+    monkeypatch.setattr(bench_hash, "case_dataset", lambda case: root)
+    monkeypatch.setattr(
+        sys, "argv", ["bench_hash", "--cases", "500x3", "--runs", "1", "--out-json", str(tmp_path / "r.json"), *flag]
+    )
+    bench_hash.main()
+    assert seen
+
+
 def test_combine_peak_inline_is_max_parent() -> None:
     assert bench_hash.combine_peak([(100, 0), (400, 0), (250, 0)], parent_base=300) == 400
 
@@ -117,3 +153,21 @@ def test_unordered_wide_case() -> None:
     assert bench_hash.case_root("1000000x50").name == "1000000x50"
     with pytest.raises(ValueError, match="84"):
         bench_hash.parse_case("1000x10w")
+
+
+def test_parse_case_text_key() -> None:
+    spec, unordered = bench_hash.parse_case("10000000x10t")
+    assert not unordered
+    assert (spec.rows, spec.cols, spec.profile) == (10_000_000, 10, "default")
+    assert spec.label == "10000000x10_texto"
+    assert bench_hash.case_root("10000000x10t").name == "10000000x10_texto"
+    for bad in ("1000000x50tu", "2000000x84wt"):
+        with pytest.raises(ValueError, match="texto"):
+            bench_hash.parse_case(bad)
+    # os casos antigos seguem iguais
+    for case, label, u in (("1000000x50", "1000000x50", False), ("1000000x50u", "1000000x50", True)):
+        s, got_u = bench_hash.parse_case(case)
+        assert (s.label, got_u) == (label, u)
+    w, wu = bench_hash.parse_case("2000000x84wu")
+    assert (w.label, wu) == ("2000000x84_wide84", True)
+    assert bench_hash.parse_case("2000000x84w")[0].label == "2000000x84_wide84"

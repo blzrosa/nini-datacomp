@@ -17,7 +17,7 @@ import make_data
 import make_golden
 from cases import CASES
 from make_data import Spec, generate, load_expected
-from nini_datacomp import pipeline, windows
+from nini_datacomp import io, pipeline, windows
 from nini_datacomp.errors import UnsupportedTypeError
 from nini_datacomp.io import open_source, partition_source
 from nini_datacomp.pipeline import WindowReader, compare_rows, count_rows, prepare_keys
@@ -353,6 +353,108 @@ def test_partitioned_staging_counts(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert got.mismatched == len([i for i in range(100, 4000) if i % 7 == 0])
 
 
+def test_stage_sides_match_repartition(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`_stage_sides` é True exatamente nos lados que `_repartition` troca por fonte em staging."""
+    lp, rp = _write_pair(tmp_path, shuffled=True)
+    (tmp_path / "ord").mkdir()
+    ordered_l, _ = _write_pair(tmp_path / "ord", shuffled=False)
+
+    def sides(left: Path, right: Path, window_rows: int) -> tuple[tuple[bool, bool], tuple[bool, bool]]:
+        ls, rs = open_source(left), open_source(right)
+        plan = plan_windows(ls, rs, ["id"], window_rows=window_rows)
+        want = pipeline._stage_sides(plan, ls, rs)
+        _new_plan, nl, nr, owned = pipeline._repartition(plan, ls, rs, ["id"], None)
+        try:
+            return want, (nl is not ls, nr is not rs)
+        finally:
+            for src in owned:
+                src.cleanup()
+
+    monkeypatch.setattr(pipeline, "PARTITION_THRESHOLD", 3.0)
+    want, got = sides(lp, rp, 1000)
+    assert want == got == (True, True)
+    # um lado em ordem tem amplificação ~1: só o fora de ordem é trocado
+    want, got = sides(ordered_l, rp, 1000)
+    assert want == got
+    assert want[1]
+    assert not want[0]
+    # 2 janelas: sem staging
+    want, got = sides(lp, rp, 2000)
+    assert want == got == (False, False)
+    # amplificação abaixo do limiar
+    monkeypatch.setattr(pipeline, "PARTITION_THRESHOLD", 1000.0)
+    want, got = sides(lp, rp, 1000)
+    assert want == got == (False, False)
+
+
+def test_sliced_read_same_counts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A leitura em fatias de row groups dá as mesmas contagens da comparação em memória, com `steps` (cast) e 2
+    arquivos por lado; `Source.scan` recebe `rows`."""
+    n = 4000
+    for side, offset in (("l", 0), ("r", 100)):
+        folder = tmp_path / side
+        folder.mkdir()
+        df = pl.DataFrame(
+            {
+                "id": range(offset, n + offset),
+                "w": [i * 3 + (i % 7 == 0) * (side == "r") for i in range(offset, n + offset)],
+            }
+        )
+        df = df.sample(fraction=1.0, shuffle=True, seed=5 if side == "l" else 6)
+        if side == "r":
+            df = df.with_columns(pl.col("w").cast(pl.Int32))
+        df.slice(0, n // 2).write_parquet(folder / "a.parquet", row_group_size=100, statistics=True)
+        df.slice(n // 2).write_parquet(folder / "b.parquet", row_group_size=100, statistics=True)
+    lp, rp = tmp_path / "l", tmp_path / "r"
+
+    seen: list[tuple[int, int] | None] = []
+    real_scan = io.Source.scan
+
+    def spy(self: Any, files: Any, rows: Any = None) -> Any:
+        seen.append(rows)
+        return real_scan(self, files, rows)
+
+    monkeypatch.setattr(io.Source, "scan", spy)
+    base = compare_rows(
+        pl.read_parquet(lp / "*.parquet"), pl.read_parquet(rp / "*.parquet"), ["id"], window_rows=1000, casting="left"
+    )
+    assert base.mismatched is not None
+    assert base.mismatched > 0
+    for share in (1e-9, 1e9):  # m = 1 (uma fatia por row group) e fatia que cobre o arquivo inteiro
+        monkeypatch.setattr(windows, "SLICE_SHARE", share)
+        seen.clear()
+        got = compare_rows(lp, rp, ["id"], window_rows=1000, casting="left")
+        assert any("em fatias" in note for note in got.notes)
+        slices = [r for r in seen if r is not None]
+        assert slices
+        if share < 1:
+            assert {n for _, n in slices} == {100}
+        else:
+            assert {a for a, _ in slices} == {0}
+        for field in ("left_total", "right_total", "common", "left_only", "right_only", "mismatched"):
+            assert getattr(got, field) == getattr(base, field), field
+        assert got.column_mismatches == base.column_mismatches
+
+
+def test_repartition_clears_slice_sides(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    lp, rp = _write_pair(tmp_path, shuffled=True)
+    (tmp_path / "ord").mkdir()
+    ordered_l, _ = _write_pair(tmp_path / "ord", shuffled=False)
+    monkeypatch.setattr(pipeline, "PARTITION_THRESHOLD", 3.0)
+    for left in (lp, ordered_l):  # os dois lados regravados / só o direito (o esquerdo, em ordem, não é fatiado)
+        ls, rs = open_source(left), open_source(rp)
+        plan = plan_windows(ls, rs, ["id"], window_rows=1000)
+        assert plan.slice_sides[1]
+        new_plan, nl, nr, owned = pipeline._repartition(plan, ls, rs, ["id"], None)
+        try:
+            staged = (nl is not ls, nr is not rs)
+            assert staged[1]
+            assert new_plan.slice_sides == (plan.slice_sides[0] and not staged[0], False)
+        finally:
+            for src in owned:
+                src.cleanup()
+
+
 def test_repartition_uses_plan_stage_chunk(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(pipeline, "PARTITION_THRESHOLD", 3.0)
     seen: list[int] = []
@@ -381,19 +483,19 @@ def test_partitioned_staging_skipped_below_threshold(tmp_path: Path) -> None:
 
 
 def test_stage_partitioned_one_file_per_window(tmp_path: Path) -> None:
-    """Vários arquivos de origem e fatias pequenas: cada janela acaba com um arquivo só, com as linhas dela, e os
-    arquivos intermediários somem (o disco não guarda a fonte duas vezes)."""
+    """Vários arquivos de origem e fatias pequenas: cada janela acaba com os arquivos dela (um por fatia e origem, sem
+    juntar), todos fora das subpastas, e o total de linhas é o da fonte."""
     lake = _write_text_lake(tmp_path / "lake", shuffled=True, text=False)
     src = open_source(lake)
     plan = plan_windows(src, src, ["id"], window_rows=500)
     staged = stage_partitioned(src, plan.windows, ["id"], ReadOptions(temp_dir=tmp_path), chunk_bytes=1)
     assert len(staged.groups) == len(plan.windows)
-    assert all(len(g) == 1 for g in staged.groups)
-    assert len(staged.files) == len(plan.windows)
+    assert all(len(g) >= 1 for g in staged.groups)
+    assert len(staged.files) == sum(len(g) for g in staged.groups)
     assert sorted(p.name for p in staged.path.rglob("*.parquet")) == sorted(f.name for f in staged.files)
     ids: list[int] = []
     for w, group in zip(plan.windows, staged.groups, strict=True):
-        got = pl.read_parquet(staged.files[group[0]])["id"]
+        got = pl.concat([pl.read_parquet(staged.files[i])["id"] for i in group])
         pred = w.predicate(["id"], [pl.Int64()])
         assert pred is None or got.len() == got.to_frame().filter(pred).height
         ids += got.to_list()
@@ -423,28 +525,19 @@ def test_stage_partitioned_merge_keeps_rows_and_order_free(tmp_path: Path) -> No
         default.cleanup()
 
 
-@pytest.mark.parametrize("layout", ["window", "pieces", "sorted"])
 @pytest.mark.parametrize("chunk_bytes", [1, 64 * 1024**2])
-def test_stage_layouts_same_rows_per_window(tmp_path: Path, layout: str, chunk_bytes: int) -> None:
-    """Qualquer layout do staging entrega, por janela, as mesmas linhas que a leitura da fonte original; a pasta
-    temporária some."""
+def test_stage_same_rows_per_window(tmp_path: Path, chunk_bytes: int) -> None:
+    """O staging entrega, por janela, as mesmas linhas que a leitura da fonte original; a pasta temporária some."""
     lake = _write_text_lake(tmp_path / "lake", shuffled=True, text=False)
     src = open_source(lake)
     plan = plan_windows(src, src, ["id"], window_rows=500)
     assert len(plan.windows) > 4
     staged_src, groups = partition_source(
-        src,
-        plan.windows,
-        ["id"],
-        ReadOptions(temp_dir=tmp_path),
-        chunk_bytes=chunk_bytes,
-        layout=layout,  # type: ignore[arg-type]
+        src, plan.windows, ["id"], ReadOptions(temp_dir=tmp_path), chunk_bytes=chunk_bytes
     )
     folder = staged_src.staged.path if staged_src.staged is not None else None
     try:
         assert len(groups) == len(plan.windows)
-        if layout == "window":
-            assert all(len(g) <= 1 for g in groups)
         staged_plan = dataclasses.replace(plan, files=(groups, groups))
         want = [(lf.sort("id"), rf.sort("id")) for _, lf, rf in WindowReader(src, src, plan, ["id"], [pl.Int64()])]
         reader = WindowReader(staged_src, staged_src, staged_plan, ["id"], [pl.Int64()])
@@ -477,8 +570,8 @@ def test_stage_partitioned_empty_window(tmp_path: Path) -> None:
     staged = stage_partitioned(src, wins, ["id"], ReadOptions(temp_dir=tmp_path), chunk_bytes=1)
     try:
         assert staged.groups[1] == ()
-        assert len(staged.files) == 2
-        assert [len(g) for g in staged.groups] == [1, 0, 1]
+        assert len(staged.files) == sum(len(g) for g in staged.groups)
+        assert [len(g) > 0 for g in staged.groups] == [True, False, True]
         assert sum(pl.read_parquet(f).height for f in staged.files) == 4000
     finally:
         staged.cleanup()
