@@ -16,11 +16,13 @@ from __future__ import annotations
 import argparse
 import inspect
 import json
+import os
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -113,13 +115,19 @@ def compare_kwargs(spec: dict[str, Any], fn: Any) -> dict[str, Any]:
     return {k: v for k, v in wanted.items() if k in accepted and v is not None}
 
 
+def write_base(spec: dict[str, Any]) -> None:
+    """Grava ``"<pid> <rss>"`` do Python que roda a comparação (o host): a base (Python + Polars importados) não é custo
+    da comparação, e o pid separa o host do launcher do venv que o sobe (Windows)."""
+    if spec.get("base_file"):
+        Path(spec["base_file"]).write_text(f"{os.getpid()} {psutil.Process().memory_info().rss}", encoding="utf-8")
+
+
 def worker_via_compare(spec: dict[str, Any]) -> None:
     """O caminho público (``dc.compare``, com ``isolation="auto"``): o que um usuário roda, com o processo isolado
     quando o plano pede. O pico do ``measure_once`` soma o processo e os filhos."""
     import nini_datacomp as dc  # noqa: PLC0415 - no subprocesso, fora do cronômetro
 
-    if spec.get("base_file"):  # a base do pai (Python + Polars importados), que não é custo da comparação
-        Path(spec["base_file"]).write_text(str(psutil.Process().memory_info().rss), encoding="utf-8")
+    write_base(spec)
     t0 = time.perf_counter()
     res = dc.compare(
         spec["left"], spec["right"], on="id", memory_limit=spec["memory_limit"], abs_tol=spec["abs_tol"],
@@ -166,6 +174,7 @@ def worker(spec: dict[str, Any]) -> None:
 
         if hasattr(pipeline, "PARTITION_THRESHOLD"):  # a v0.3.0 não tem staging: nada a desligar
             setattr(pipeline, "PARTITION_THRESHOLD", float("inf"))  # noqa: B010
+    write_base(spec)
     t0 = time.perf_counter()
     res = compare_rows(spec["left"], spec["right"], ["id"], **compare_kwargs(spec, compare_rows))
     seconds = time.perf_counter() - t0
@@ -189,13 +198,6 @@ def worker(spec: dict[str, Any]) -> None:
     print("RESULT " + json.dumps(out))
 
 
-def _rss(process: psutil.Process) -> int:
-    try:
-        return int(process.memory_info().rss)
-    except psutil.Error:  # o filho acabou de terminar
-        return 0
-
-
 def _private(process: psutil.Process) -> int:
     """Memória privada (commit) do processo: só o Windows a informa; nos outros, vale o RSS."""
     try:
@@ -205,6 +207,38 @@ def _private(process: psutil.Process) -> int:
     return int(getattr(mi, "private", mi.rss))
 
 
+def parse_base(text: str) -> tuple[int, int] | None:
+    """``"<pid> <rss>"`` do arquivo de base; ``None`` se vazio ou inválido (ainda sendo escrito)."""
+    parts = text.split()
+    if len(parts) != 2:
+        return None
+    try:
+        return int(parts[0]), int(parts[1])
+    except ValueError:
+        return None
+
+
+def _descendants(procs: Sequence[tuple[int, int, int]], host_pid: int) -> set[int]:
+    found: set[int] = set()
+    frontier = {host_pid}
+    while frontier:
+        frontier = {pid for pid, ppid, _ in procs if ppid in frontier and pid not in found and pid != host_pid}
+        found |= frontier
+    return found
+
+
+def split_rss(procs: Sequence[tuple[int, int, int]], host_pid: int | None) -> tuple[int, int]:
+    """``(host, workers)`` em bytes, de ``procs`` = ``(pid, ppid, rss)`` da árvore inteira. Host = o rss do
+    ``host_pid``; workers = a soma dos descendentes dele (com o launcher do worker). Os ancestrais do host (o
+    launcher do venv do bench) ficam fora. Sem ``host_pid``: tudo é host."""
+    if host_pid is None:
+        return sum(rss for _, _, rss in procs), 0
+    rss_of = {pid: rss for pid, _, rss in procs}
+    if host_pid not in rss_of:
+        return 0, 0
+    return rss_of[host_pid], sum(rss_of[pid] for pid in _descendants(procs, host_pid))
+
+
 def combine_peak(samples: list[tuple[int, int]], parent_base: int) -> int:
     """Pico da comparação a partir das amostras ``(pai, filhos)`` (bytes): o worker inteiro mais o que o pai CRESCE
     acima da ``parent_base`` na mesma amostra. A base do pai (Python + Polars) é do usuário, não da comparação.
@@ -212,6 +246,24 @@ def combine_peak(samples: list[tuple[int, int]], parent_base: int) -> int:
     if not any(children for _, children in samples):
         return max((parent for parent, _ in samples), default=0)
     return max(children + max(0, parent - parent_base) for parent, children in samples)
+
+
+def _observe(ps: psutil.Process, host_pid: int | None, wset: dict[int, int]) -> tuple[int, int, int, int]:
+    """Uma amostra da árvore de ``ps``: ``(rss do host, rss dos workers, rss da árvore, commit)``; atualiza em ``wset``
+    o maior ``peak_wset`` visto por pid de worker. O commit é o dos workers somados ou, sem workers, o do host."""
+    infos = {p.pid: (p, p.ppid(), p.memory_info()) for p in [ps, *ps.children(recursive=True)]}
+    procs = [(pid, ppid, int(mi.rss)) for pid, (_, ppid, mi) in infos.items()]
+    host, workers = split_rss(procs, host_pid)
+    kids = _descendants(procs, host_pid) if host_pid is not None and host_pid in infos else set()
+    for pid in kids:
+        mi = infos[pid][2]
+        wset[pid] = max(wset.get(pid, 0), int(getattr(mi, "peak_wset", mi.rss)))
+    private = 0
+    if kids:
+        private = sum(_private(infos[pid][0]) for pid in kids)
+    elif host_pid in infos:
+        private = _private(infos[host_pid][0])
+    return host, workers, sum(rss for _, _, rss in procs), private
 
 
 def measure_once(spec: dict[str, Any]) -> dict[str, Any]:
@@ -233,17 +285,25 @@ def measure_once(spec: dict[str, Any]) -> dict[str, Any]:
             env=child_env(spec.get("allocator", "default")),
         )
         ps = psutil.Process(proc.pid)
-        samples: list[tuple[int, int]] = []  # (rss do pai, soma do rss dos filhos)
-        private_peak = 0  # o maior commit: dos filhos somados (worker) ou, sem filhos, do próprio processo
+        # No Windows, sys.executable é um launcher que sobe o Python real como filho: proc.pid NÃO é o host. O host é o
+        # pid que ele grava no arquivo de base; os workers são os descendentes do host.
+        samples: list[tuple[int, int]] = []  # (rss do host, rss dos workers)
+        base: tuple[int, int] | None = None
+        host_max = 0  # maior rss do host depois que a base existe
+        total_peak = 0  # soma da árvore toda (regra antiga)
+        private_peak = 0  # o maior commit: dos workers somados ou, sem workers, do host
+        wset: dict[int, int] = {}  # por pid de worker, o último peak_wset visto
         while proc.poll() is None:
             try:
-                # o processo e os filhos (o worker do isolation="process" conta no pico da comparação)
-                children = ps.children(recursive=True)
-                parent_rss = ps.memory_info().rss
-                kids_rss = sum(_rss(c) for c in children)
-                kids_private = sum(_private(c) for c in children)
-                samples.append((parent_rss, kids_rss))
-                private_peak = max(private_peak, kids_private if children else _private(ps))
+                if base is None:
+                    base = parse_base(base_file.read_text(encoding="utf-8")) if base_file.exists() else None
+                host_pid = base[0] if base else None
+                host, workers, total, private = _observe(ps, host_pid, wset)
+                samples.append((host, workers))
+                total_peak = max(total_peak, total)
+                private_peak = max(private_peak, private)
+                if base:
+                    host_max = max(host_max, host)
             except psutil.Error:
                 break
             time.sleep(0.02)
@@ -252,23 +312,24 @@ def measure_once(spec: dict[str, Any]) -> dict[str, Any]:
         err_f.seek(0)
         stdout = out_f.read().decode("utf-8", errors="replace")
         stderr = err_f.read().decode("utf-8", errors="replace")
-        try:
-            base = int(base_file.read_text(encoding="utf-8"))
-        except (OSError, ValueError):  # inline (sem worker via compare): sem base
-            base = 0
-    # o pai só cresce a partir da base depois que ela existe; antes disso não há filho e a amostra não conta
-    total_peak = max((p + k for p, k in samples), default=0)
-    peak = combine_peak(samples, base)
-    worker_peak = max((k for _, k in samples), default=0)
+        if base is None:  # o worker acabou antes da primeira amostra com a base
+            try:
+                base = parse_base(base_file.read_text(encoding="utf-8"))
+            except OSError:
+                base = None
+    base_rss = base[1] if base else 0
+    peak = combine_peak(samples, base_rss)
+    worker_peak = max((w for _, w in samples), default=0)
     for line in stdout.splitlines():
         if line.startswith("RESULT "):
             r = json.loads(line[7:])
             r["peak_total_mb"] = max(r["peak_mb"], total_peak / MB)
-            # com worker, o pico do próprio pai (peak_wset) inclui a base: só vale a regra nova
+            # com worker, o peak_wset do host inclui a base: só vale a regra de combine_peak
             r["peak_mb"] = peak / MB if worker_peak else max(r["peak_mb"], peak / MB)
-            r["parent_base_mb"] = base / MB
-            r["parent_growth_mb"] = max(0, max((p for p, _ in samples), default=0) - base) / MB
+            r["parent_base_mb"] = base_rss / MB
+            r["parent_growth_mb"] = max(0, host_max - base_rss) / MB
             r["worker_peak_mb"] = worker_peak / MB
+            r["worker_wset_peak_mb"] = max(wset.values(), default=0) / MB
             r["private_peak_mb"] = private_peak / MB
             return r
     raise RuntimeError("a execução falhou:\n" + stderr[-3000:])
@@ -331,16 +392,19 @@ def report(results: dict[str, list[dict[str, Any]]], memory_limit: str, mode: st
         f"Pico em MiB (1 MiB = 1.048.576 bytes); `cabe` = o maior pico das execuções até o memory_limit "
         f"({limit_mib:,.0f} MiB).",
         "",
-        'Regra do pico: com worker (`isolation="process"`), pico = RSS do worker + o quanto o pai CRESCE acima da sua',
-        "base (Python + Polars importados, medida antes da comparação) na mesma amostra; a base do pai é do usuário,",
-        "não da comparação. Sem worker (inline), pico = maior RSS do processo. `pico total` = regra antiga (RSS do pai",
-        "+ RSS dos filhos, que conta duas vezes as DLLs do Polars e as páginas de arquivo mapeadas). Amostragem a",
-        "20 ms: um pico mais curto que isso, ou o `peak_wset` do próprio worker, não é visto pelo pai.",
+        "Regra do pico: no Windows o `sys.executable` do venv é um launcher que sobe o Python real como filho, então",
+        "o host é o pid gravado por ele mesmo (não o do processo lançado) e os workers são os descendentes do host",
+        '(com o launcher do worker). Com worker (`isolation="process"`), pico = RSS dos workers + o quanto o host',
+        "CRESCE acima da sua base (Python + Polars importados, medida antes da comparação) na mesma amostra; a base do",
+        "host é do",
+        "usuário, não da comparação. Sem worker (inline), pico = maior RSS do host (ou o `peak_wset` dele, se maior).",
+        "`pico total` = soma do RSS da árvore inteira (conta duas vezes as DLLs do Polars e as páginas mapeadas).",
+        "`worker (peak_wset)` = o maior `peak_wset` de um só processo de worker (sem a perda da amostragem a 20 ms).",
         "",
-        "| caso | janelas | tempo (s) | pico (MiB) | pico total (MiB) | cabe | datacompolars: tempo "
-        "| datacompolars: pico "
+        "| caso | janelas | tempo (s) | pico (MiB) | host base | host cresc. | worker | worker (peak_wset) "
+        "| pico total (MiB) | cabe | datacompolars: tempo | datacompolars: pico "
         "| razão (IC 95%) | situação | contagens |",
-        "|---|---:|---:|---:|---:|:---:|---:|---:|---:|:---:|:---:|",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|:---:|---:|---:|---:|:---:|:---:|",
     ]
     detail = ["", "Etapas (média, s; `read_wait` = a leitura que não ficou escondida atrás da comparação):", ""]
     for case, runs in results.items():
@@ -357,6 +421,10 @@ def report(results: dict[str, list[dict[str, Any]]], memory_limit: str, mode: st
         total_cell = _cell([r.get("peak_total_mb", r["peak_mb"]) for r in runs], 0)
         lines.append(
             f"| {case} | {runs[-1]['windows']} | {_cell(seconds, 3)} | {_cell([r['peak_mb'] for r in runs], 0)} "
+            f"| {_cell([r.get('parent_base_mb', 0.0) for r in runs], 0)} "
+            f"| {_cell([r.get('parent_growth_mb', 0.0) for r in runs], 0)} "
+            f"| {_cell([r.get('worker_peak_mb', 0.0) for r in runs], 0)} "
+            f"| {_cell([r.get('worker_wset_peak_mb', 0.0) for r in runs], 0)} "
             f"| {total_cell} | {fits} | {bt} | {bp} | {rcell} | {status} | {ok} |"
         )
         pieces = runs[-1].get("pieces", 0) / max(1, 2 * runs[-1]["windows"] * runs[-1].get("groups", 1))

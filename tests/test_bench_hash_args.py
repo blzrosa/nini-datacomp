@@ -73,6 +73,31 @@ def test_combine_peak_parent_below_base_not_negative() -> None:
     assert bench_hash.combine_peak([(200, 900), (250, 800)], parent_base=300) == 900
 
 
+def test_split_rss_ignores_launcher_above_host() -> None:
+    procs = [(1, 0, 5), (2, 1, 300)]  # launcher(5) -> host(300)
+    assert bench_hash.split_rss(procs, host_pid=2) == (300, 0)
+
+
+def test_split_rss_counts_worker_and_its_launcher() -> None:
+    procs = [(1, 0, 5), (2, 1, 300), (3, 2, 5), (4, 3, 700)]  # launcher -> host -> launcher -> worker
+    assert bench_hash.split_rss(procs, host_pid=2) == (300, 705)
+
+
+def test_split_rss_without_host_pid_is_all_host() -> None:
+    procs = [(1, 0, 5), (2, 1, 300)]
+    assert bench_hash.split_rss(procs, host_pid=None) == (305, 0)
+
+
+def test_split_rss_host_gone() -> None:
+    assert bench_hash.split_rss([(1, 0, 5), (3, 1, 700)], host_pid=2) == (0, 0)
+
+
+def test_parse_base_reads_pid_and_rss() -> None:
+    assert bench_hash.parse_base("123 456") == (123, 456)
+    assert bench_hash.parse_base("") is None
+    assert bench_hash.parse_base("abc") is None
+
+
 def test_unordered_wide_case() -> None:
     spec, unordered = bench_hash.parse_case("22000000x84w")
     assert not unordered
